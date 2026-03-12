@@ -39,6 +39,88 @@ from svghmi.fonts import GetFontTypeAndFamilyName, GetCSSFontFaceFromFontFile
 ScriptDirectory = paths.AbsDir(__file__)
 
 
+def _svghmi_cpath(path_list):
+    """Compute SVGHMI C path from IEC path list.
+    CONFIG__VAR, RESOURCE__VAR, RESOURCE__PROG.VAR, RESOURCE__PROG.FB.VAR, ...
+    """
+    parts = [p.upper() for p in path_list]
+    if len(parts) <= 2:
+        return "__".join(parts)
+    if len(parts) == 3:
+        return "__".join(parts[1:])
+    return "__".join(parts[1:3]) + "." + ".".join(parts[3:])
+
+
+def _collect_hmi_instances(ctr):
+    """Traverse PLCopen model, return [(path, derived, iectype, vartype), ...] for all HMI_* vars."""
+    project = ctr.GetProject(debug=False)
+    if project is None:
+        return []
+
+    _varclass_to_vartype = {
+        "Local": "VAR", "Global": "VAR", "Temp": "VAR",
+        "External": "EXT", "Input": "IN", "Output": "OUT", "InOut": "MEM",
+    }
+
+    def _var_typename(var):
+        content = var.type.getcontent()
+        tag = content.getLocalTag()
+        return content.getname() if tag == "derived" else tag.upper()
+
+    result = []
+
+    def _collect_pou_vars(type_name, path_prefix):
+        pou = project.getpou(type_name)
+        if pou is None:
+            return
+        for var_class, varlist in pou.getvars():
+            vartype = _varclass_to_vartype.get(var_class, "VAR")
+            for var in varlist.getvariable():
+                typename = _var_typename(var)
+                var_path = path_prefix + [var.getname().upper()]
+                if typename in HMI_TYPES:
+                    result.append((var_path, typename,
+                                   ctr.GetBaseType(typename) or typename, vartype))
+                elif var_class in ("functionBlock", "program"):
+                    _collect_pou_vars(typename, var_path)
+
+    configs = project.getconfigurations()
+    if configs:
+        # Library/CTN-provided config globals (e.g. HMI_ROOT, heartbeat) are not in
+        # the PLCopen project model — they come from GetConfNodeGlobalInstances() as tuples.
+        cfg_name = configs[0].getname().upper()
+        for item in ctr.GetConfNodeGlobalInstances():
+            if isinstance(item, tuple) and len(item) >= 2:
+                name, iec_type = item[0], item[1]
+                if iec_type in HMI_TYPES:
+                    result.append(([cfg_name, name.upper()], iec_type,
+                                   ctr.GetBaseType(iec_type) or iec_type, "VAR"))
+        for config in configs:
+            config_name = config.getname().upper()
+            for varlist in config.getglobalVars():
+                for var in varlist.getvariable():
+                    typename = _var_typename(var)
+                    if typename in HMI_TYPES:
+                        result.append(([config_name, var.getname().upper()], typename,
+                                    ctr.GetBaseType(typename) or typename, "VAR"))
+            for resource in config.getresource():
+                res_name = resource.getname().upper()
+                for varlist in resource.getglobalVars():
+                    for var in varlist.getvariable():
+                        typename = _var_typename(var)
+                        if typename in HMI_TYPES:
+                            result.append(([config_name, res_name, var.getname().upper()], typename,
+                                        ctr.GetBaseType(typename) or typename, "VAR"))
+                instances = list(resource.getpouInstance())
+                for task in resource.gettask():
+                    instances.extend(task.getpouInstance())
+                for inst in instances:
+                    _collect_pou_vars(inst.gettypeName(),
+                                    [config_name, res_name, inst.getname().upper()])
+
+    return result
+
+
 # module scope for HMITree root
 # so that CTN can use HMITree deduced in Library
 # note: this only works because library's Generate_C is
@@ -58,9 +140,6 @@ class SVGHMILibrary(POULibrary):
          return paths.AbsNeighbourFile(__file__, "pous.xml")
 
     def Generate_C(self, buildpath, pous_data, IECCFLAGS):
-        # TODO: rebuild HMI tree from PLCopen model instead of varlist
-        varlist = []  # placeholder — SVGHMI needs rework
-
         self.maxConnectionsTotal = 0
 
         already_found_watchdog = False
@@ -68,10 +147,7 @@ class SVGHMILibrary(POULibrary):
         for CTNChild in self.GetCTR().IterChildren():
             if isinstance(CTNChild, SVGHMI):
                 found_SVGHMI_instance = True
-                # collect maximum connection total for all svghmi nodes
                 self.maxConnectionsTotal += CTNChild.GetParamsAttributes("SVGHMI.MaxConnections")["value"]
-
-                # spot watchdog abuse
                 if CTNChild.GetParamsAttributes("SVGHMI.EnableWatchdog")["value"]:
                     if already_found_watchdog:
                         self.FatalError("SVGHMI: Only one watchdog enabled HMI allowed")
@@ -80,101 +156,8 @@ class SVGHMILibrary(POULibrary):
         if not found_SVGHMI_instance:
             self.FatalError("SVGHMI : Library is selected but not used. Please either deselect it in project config or add a SVGHMI node to project.")
 
-
-        """
-        PLC Instance Tree:
-          prog0
-           +->v1 HMI_INT
-           +->v2 HMI_INT
-           +->fb0 (type mhoo)
-           |   +->va HMI_NODE
-           |   +->v3 HMI_INT
-           |   +->v4 HMI_INT
-           |
-           +->fb1 (type mhoo)
-           |   +->va HMI_NODE
-           |   +->v3 HMI_INT
-           |   +->v4 HMI_INT
-           |
-           +->fb2
-               +->v5 HMI_IN
-
-        HMI tree:
-          hmi0
-           +->v1
-           +->v2
-           +->fb0 class:va
-           |   +-> v3
-           |   +-> v4
-           |
-           +->fb1 class:va
-           |   +-> v3
-           |   +-> v4
-           |
-           +->v5
-
-        """
-
-        # Filter known HMI types
-        hmi_types_instances = [v for v in varlist if v["derived"] in HMI_TYPES]
-
-        self.hmi_tree_root = None
-
-        # take first HMI_NODE (placed as special node), make it root
-        for i,v in enumerate(hmi_types_instances):
-            path = v["IEC_path"].split(".")
-            derived = v["derived"]
-            if derived == "HMI_NODE":
-                self.hmi_tree_root = HMITreeNode(path, "", derived, v["type"], v["vartype"], v["C_path"])
-                hmi_types_instances.pop(i)
-                break
-
-        # deduce HMI tree from PLC HMI_* instances
-        for v in hmi_types_instances:
-            path = v["IEC_path"].split(".")
-            # ignores variables starting with _TMP_
-            if path[-1].startswith("_TMP_"):
-                continue
-            vartype = v["vartype"]
-            # ignores external variables
-            if vartype == "EXT":
-                continue
-            derived = v["derived"]
-            kwargs={}
-            if derived == "HMI_NODE":
-                # TODO : make problem if HMI_NODE used in CONFIG or RESOURCE
-                name = path[-2]
-                kwargs['hmiclass'] = path[-1]
-            else:
-                name = path[-1]
-            new_node = HMITreeNode(path, name, derived, v["type"], vartype, v["C_path"], **kwargs)
-            placement_result = self.hmi_tree_root.place_node(new_node)
-            if placement_result is not None:
-                cause, problematic_node = placement_result
-                if cause == "Non_Unique":
-                    message = _("HMI tree nodes paths are not unique.\nConflicting variable: {} {}").format(
-                        ".".join(problematic_node.path),
-                        ".".join(new_node.path))
-
-                    last_FB = None 
-                    for _v in varlist:
-                        if _v["vartype"] == "FB":
-                            last_FB = _v 
-                        if _v["C_path"] == problematic_node:
-                            break
-                    if last_FB is not None:
-                        failing_parent = last_FB["type"]
-                        message += "\n"
-                        message += _("Solution: Add HMI_NODE at beginning of {}").format(failing_parent)
-
-                elif cause in ["Late_HMI_NODE", "Duplicate_HMI_NODE"]:
-                    cause, problematic_node = placement_result
-                    message = _("There must be only one occurrence of HMI_NODE before any HMI_* variable in POU.\nConflicting variable: {} {}").format(
-                        ".".join(problematic_node.path),
-                        ".".join(new_node.path))
-
-                self.FatalError("SVGHMI : " + message)
-
+        instances = _collect_hmi_instances(self.GetCTR())
+        self._build_hmi_tree(instances, cpath_fn=_svghmi_cpath)
         self.on_hmitree_update()
 
         variable_decl_array = []
@@ -205,25 +188,14 @@ class SVGHMILibrary(POULibrary):
                     str(buf_index) + ")"]
                 buf_index += sz
                 item_count += 1
-                if len(node.path) == 1:
-                    extern_variables_declarations += [
-                        "extern __IEC_" + node.iectype + "_" +
-                        "t" if node.vartype == "VAR" else "p"
-                        + node.cpath + ";"]
 
         assert(found_heartbeat)
 
-        # TODO : filter only requiered external declarations
         extern_variables_declarations += [
-                {
-                    "EXT": "extern __IEC_%(type)s_p %(C_path)s;",
-                    "IN":  "extern __IEC_%(type)s_p %(C_path)s;",
-                    "MEM": "extern __IEC_%(type)s_p %(C_path)s;",
-                    "OUT": "extern __IEC_%(type)s_p %(C_path)s;",
-                    "VAR": "extern __IEC_%(type)s_t %(C_path)s;",
-                    "FB":  "extern %(type)s_data__ %(C_path)s;"
-                }[v["vartype"]] % v
-                for v in varlist if v["C_path"].find('.') < 0]
+            "extern %s %s;" % (pous_data.c_type_and_recurse(base_type, dims)[0],
+                               pous_data.iec_path_to_c_name(path))
+            for path, _flat_count, dims, base_type in pous_data.instances
+        ]
 
         # C code to observe/access HMI tree variables
         svghmi_c_filepath = paths.AbsNeighbourFile(__file__, "svghmi.c")
@@ -256,17 +228,58 @@ class SVGHMILibrary(POULibrary):
         runtimefile.write(svghmiservercode)
         runtimefile.close()
 
-        # Backup HMI Tree in XML form so that it can be loaded without building
-        hmitree_backup_path = os.path.join(buildpath, "hmitree.xml")
-        hmitree_backup_file = open(hmitree_backup_path, 'wb')
-        hmitree_backup_file.write(etree.tostring(self.hmi_tree_root.etree()))
-        hmitree_backup_file.close()
-
         return ((["svghmi"], [(gen_svghmi_c_path, IECCFLAGS)], True), "",
                 ("runtime_00_svghmi.py", open(runtimefile_path, "rb")))
                 #         ^
                 # note the double zero after "runtime_", 
                 # to ensure placement before other CTN generated code in execution order
+
+    def _build_hmi_tree(self, hmi_instances, cpath_fn=None):
+        self.hmi_tree_root = None
+        hmi_types_instances = [(p, d, i, v) for p, d, i, v in hmi_instances
+                               if d in HMI_TYPES]
+
+        for idx, (path, derived, iectype, vartype) in enumerate(hmi_types_instances):
+            if derived == "HMI_NODE":
+                cpath = cpath_fn(path) if cpath_fn else None
+                self.hmi_tree_root = HMITreeNode(path, "", derived, iectype, vartype, cpath)
+                hmi_types_instances.pop(idx)
+                break
+
+        if self.hmi_tree_root is None:
+            return
+
+        for path, derived, iectype, vartype in hmi_types_instances:
+            if path[-1].startswith("_TMP_"):
+                continue
+            if vartype == "EXT":
+                continue
+            kwargs = {}
+            if derived == "HMI_NODE":
+                name = path[-2]
+                kwargs["hmiclass"] = path[-1]
+            else:
+                name = path[-1]
+            cpath = cpath_fn(path) if cpath_fn else None
+            new_node = HMITreeNode(path, name, derived, iectype, vartype, cpath, **kwargs)
+            placement_result = self.hmi_tree_root.place_node(new_node)
+            if placement_result is not None:
+                cause, problematic_node = placement_result
+                if cause == "Non_Unique":
+                    message = _("HMI tree nodes paths are not unique.\nConflicting variable: {} {}").format(
+                        ".".join(problematic_node.path), ".".join(new_node.path))
+                elif cause in ["Late_HMI_NODE", "Duplicate_HMI_NODE"]:
+                    message = _("There must be only one occurrence of HMI_NODE before any HMI_* variable in POU.\nConflicting variable: {} {}").format(
+                        ".".join(problematic_node.path), ".".join(new_node.path))
+                self.FatalError("SVGHMI : " + message)
+
+    def OnModelRefresh(self):
+        try:
+            instances = _collect_hmi_instances(self.GetCTR())
+            self._build_hmi_tree(instances)
+        except Exception:
+            self.hmi_tree_root = None
+        self.on_hmitree_update()
 
     def GlobalInstances(self):
         """ Adds HMI tree root and hearbeat to PLC Configuration's globals """
@@ -298,18 +311,8 @@ class SVGHMIEditor(ConfTreeNodeEditor):
     def CreateSVGHMI_UI(self, parent):
         ctroot = self.Controler.GetCTRoot()
         svghmilib = ctroot.Libraries["SVGHMI"]
-
-        if svghmilib.hmi_tree_root is None:
-            buildpath = ctroot._getBuildPath()
-            hmitree_backup_path = os.path.join(buildpath, "hmitree.xml")
-            if os.path.exists(hmitree_backup_path):
-                hmitree_backup_file = open(hmitree_backup_path, 'rb')
-                svghmilib.hmi_tree_root = HMITreeNode.from_etree(etree.parse(hmitree_backup_file).getroot())
-
         ret = SVGHMI_UI(parent, self.Controler, svghmilib.Register_SVGHMI_UI_for_HMI_tree_updates)
-
         svghmilib.on_hmitree_update()
-
         return ret
 
 if sys.platform.startswith('win'):

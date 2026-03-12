@@ -102,6 +102,9 @@ class POULibrary(object):
 
         raise UserAddressedException(message)
 
+    def OnModelRefresh(self):
+        pass
+
     def SupportsTarget(self, target):
         return True
 

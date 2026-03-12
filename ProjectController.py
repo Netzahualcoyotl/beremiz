@@ -786,6 +786,8 @@ class ProjectController(ConfigTreeNode, PLCControler):
 
             self.ClearConfNodeTypes()
             self.AddConfNodeTypesList(libs)
+            for lib in self.Libraries.values():
+                lib.OnModelRefresh()
             if self.AppFrame is not None:
                 self.AppFrame.RefreshLibraryPanel()
                 self.AppFrame.RefreshEditor()
