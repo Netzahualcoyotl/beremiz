@@ -88,7 +88,7 @@ class MQTTLibrary(POULibrary):
     def GetLibraryPath(self):
         return paths.AbsNeighbourFile(__file__, "pous.xml")
 
-    def Generate_C(self, buildpath, varlist, IECCFLAGS):
+    def Generate_C(self, buildpath, pous_data, IECCFLAGS):
 
         runtimefile_path = os.path.join(buildpath, "runtime_00_mqtt.py")
         runtimefile = open(runtimefile_path, 'w')

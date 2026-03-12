@@ -220,6 +220,8 @@ class DebugVariableTextViewer(DebugVariableViewer, wx.Panel):
 
         # Draw item current value at right side of Viewer
         item_value = item.GetValue()
+        if not isinstance(item_value, str):
+            item_value = str(item_value) if item_value is not None else ""
         w, h = gc.GetTextExtent(item_value)
         gc.DrawText(item_value, width - 40 - w, (height - h) // 2)
 

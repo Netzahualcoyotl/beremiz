@@ -68,7 +68,7 @@ class POULibrary(object):
     def GetLibraryPath(self):
         raise Exception("Not implemented")
 
-    def Generate_C(self, buildpath, varlist, IECCFLAGS):
+    def Generate_C(self, buildpath, pous_data, IECCFLAGS):
         """
         Generate C code for Libraries
         

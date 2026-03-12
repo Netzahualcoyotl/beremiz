@@ -85,7 +85,7 @@ class EtherlabLibrary(POULibrary):
     def GetLibraryPath(self):
         return GetLocalPath("pous.xml")
 
-    def Generate_C(self, buildpath, varlist, IECCFLAGS):
+    def Generate_C(self, buildpath, pous_data, IECCFLAGS):
         etherlab_ext_file = open(GetLocalPath("etherlab_ext.c"), 'r')
         etherlab_ext_code = etherlab_ext_file.read()
         etherlab_ext_file.close()

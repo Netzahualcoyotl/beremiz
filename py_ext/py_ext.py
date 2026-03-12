@@ -25,18 +25,48 @@ class PythonLibrary(POULibrary):
     def SupportsTarget(self, target):
         return target.GetTargetName() != "Zephyr"
     
-    def Generate_C(self, buildpath, varlist, IECCFLAGS):
+    def Generate_C(self, buildpath, pous_data, IECCFLAGS):
 
         plc_python_filepath = paths.AbsNeighbourFile(__file__, "plc_python.c")
         plc_python_file = open(plc_python_filepath, 'r')
         plc_python_code = plc_python_file.read()
         plc_python_file.close()
-        python_eval_fb_list = []
-        for v in varlist:
-            if v["vartype"] == "FB" and v["type"] in ["PYTHON_EVAL",
-                                                      "PYTHON_POLL"]:
-                python_eval_fb_list.append(v)
-        python_eval_fb_count = max(1, len(python_eval_fb_list))
+
+        target_fbs = {"PYTHON_EVAL", "PYTHON_POLL"}
+
+        # Count PYTHON_EVAL/PYTHON_POLL instances, including nested ones.
+        # per_type[T] = number of python-eval FBs within one instance of type T.
+        per_type = {}
+        def count_in_type(type_name):
+            key = type_name.upper()
+            if key in per_type:
+                return per_type[key]
+            per_type[key] = 0  # guard against recursion
+            count = 0
+            for name, _tc, members in pous_data.pous_list:
+                if name.upper() == key:
+                    for _mname, _flat, dims, base_type in members:
+                        multiplicity = 1
+                        for d in dims:
+                            multiplicity *= d
+                        if base_type.upper() in target_fbs:
+                            count += multiplicity
+                        else:
+                            count += multiplicity * count_in_type(base_type)
+                    break
+            per_type[key] = count
+            return count
+
+        python_eval_fb_count = 0
+        for _path, _flat_count, dims, base_type in pous_data.instances:
+            multiplicity = 1
+            for d in dims:
+                multiplicity *= d
+            if base_type.upper() in target_fbs:
+                python_eval_fb_count += multiplicity
+            else:
+                python_eval_fb_count += multiplicity * count_in_type(base_type)
+        python_eval_fb_count = max(1, python_eval_fb_count)
 
         # prepare python code
         plc_python_code = plc_python_code % {

@@ -57,7 +57,9 @@ class SVGHMILibrary(POULibrary):
     def GetLibraryPath(self):
          return paths.AbsNeighbourFile(__file__, "pous.xml")
 
-    def Generate_C(self, buildpath, varlist, IECCFLAGS):
+    def Generate_C(self, buildpath, pous_data, IECCFLAGS):
+        # TODO: rebuild HMI tree from PLCopen model instead of varlist
+        varlist = []  # placeholder — SVGHMI needs rework
 
         self.maxConnectionsTotal = 0
 

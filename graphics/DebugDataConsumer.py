@@ -150,7 +150,11 @@ TYPE_TRANSLATOR = {
     "STRING": lambda v: "'%s'" % v,
     "WSTRING": lambda v: '"%s"' % v,
     "REAL": lambda v: "%.6g" % v,
-    "LREAL": lambda v: "%.6g" % v}
+    "LREAL": lambda v: "%.6g" % v,
+    "STEP": bool,
+    "TRANSITION": bool,
+    "ACTION": bool,
+}
 
 
 # -------------------------------------------------------------------------------

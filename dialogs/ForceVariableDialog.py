@@ -140,7 +140,11 @@ def gettimeofday(v):
         return None
 
 
-GetTypeValue = {"BOOL": lambda x: {"TRUE": True, "FALSE": False, "0": False, "1": True}.get(x.upper(), None),
+_getbool = lambda x: {"TRUE": True, "FALSE": False, "0": False, "1": True}.get(x.upper(), None)
+GetTypeValue = {"BOOL": _getbool,
+                "STEP": _getbool,
+                "TRANSITION": _getbool,
+                "ACTION": _getbool,
                 "SINT": getinteger,
                 "INT": getinteger,
                 "DINT": getinteger,
@@ -192,7 +196,7 @@ class ForceVariableDialog(wx.Dialog):
 
         if GetTypeValue[self.IEC_Type] in [getinteger, getfloat]:
             self.InitCtrlNumber(info_sizer, defaultValue)
-        elif self.IEC_Type == "BOOL":
+        elif self.IEC_Type in ("BOOL", "STEP", "TRANSITION", "ACTION"):
             self.InitCtrlBool(info_sizer, defaultValue)
         else:
             self.InitCtrlDefault(info_sizer, defaultValue)
