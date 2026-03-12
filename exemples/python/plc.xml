@@ -1581,9 +1581,9 @@ Try this out and look at value of  Test_BCD_CONVERTED variable.
   }
   if(0){
     /* that code demonstrate C access to complex types */
-    char somebyte = GetFbVar(COORDS, .table[3]);
-    SetFbVar(SMURF, somebyte, .FIRSTBYTE);
-    SetFbVar(COORDS, somebyte, .table[4]);
+    char somebyte = GetFbVar(COORDS, .table[3].value);
+    SetFbVar(SMURF, somebyte, .FIRSTBYTE.value);
+    SetFbVar(COORDS, somebyte, .table[4].value);
   }
 }}
 (* If you do not use GetFbVar and SetFbVar macros, expect unexpected behaviour*)
