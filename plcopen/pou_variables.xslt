@@ -281,9 +281,9 @@
     <xsl:text>true</xsl:text>
   </xsl:template>
   <xsl:template mode="var_debug" match="*[self::ppx:type or self::ppx:baseType]/ppx:array">
-    <xsl:text>false</xsl:text>
+    <xsl:text>true</xsl:text>
   </xsl:template>
   <xsl:template mode="var_debug" match="*[self::ppx:type or self::ppx:baseType]/ppx:struct">
-    <xsl:text>false</xsl:text>
+    <xsl:text>true</xsl:text>
   </xsl:template>
 </xsl:stylesheet>

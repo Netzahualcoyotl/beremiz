@@ -95,6 +95,7 @@ for name, classes in [
     ('wx.stc',['StyledTextCtrl']),
     ('wx.lib.scrolledpanel',[]),
     ('wx.lib.mixins.listctrl',['ColumnSorterMixin', 'ListCtrlAutoWidthMixin']),
+    ('wx.lib.mixins.treemixin',['VirtualTree', 'ExpansionState']),
     ('wx.dataview',['PyDataViewIndexListModel']),
     ('matplotlib.backends.backend_agg',[]),
     ('wx.aui',[]),

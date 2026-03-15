@@ -258,11 +258,11 @@ istylesheet xmlns:ppx="http://www.plcopen.org/xml/tc6_0201"
     }
     
     template "*[self::ppx:type or self::ppx:baseType]/ppx:array", mode="var_debug" {
-        > false
+        > true
     }
     
     template "*[self::ppx:type or self::ppx:baseType]/ppx:struct", mode="var_debug" {
-        > false
+        > true
     }
     
 }
