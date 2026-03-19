@@ -32,15 +32,26 @@ import platform as platform_module
 from time import time
 import hashlib
 from tempfile import mkstemp
-from functools import wraps, partial
+from functools import wraps
 import _ctypes
 
-from runtime.typemapping import TypeTranslator
+from runtime.typemapping import IEC_types_enum
 from runtime.loglevels import LogLevelsDefault, LogLevelsCount
 from runtime.Stunnel import getPSKID
 from runtime import PlcStatus
 from runtime import MainWorker
 from runtime import default_evaluator
+
+# Callback type matching __recurse_cb_t signature for ScanInstances
+SCAN_CB_FUNC = ctypes.CFUNCTYPE(
+    ctypes.c_int,           # return value (controls traversal)
+    ctypes.c_int,           # type (__IEC_types_enum)
+    ctypes.c_void_p,        # ptr
+    ctypes.c_uint,          # cumulated
+    ctypes.c_uint,          # local
+    ctypes.c_uint,          # count
+    ctypes.c_char_p,        # name
+    ctypes.c_void_p)        # userdata
 
 if os.name in ("nt", "ce"):
     dlopen = _ctypes.LoadLibrary
@@ -271,6 +282,10 @@ class PLCObject(object):
             self._GetLogMessage.restype = ctypes.c_uint32
             self._GetLogMessage.argtypes = [ctypes.c_uint8, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
 
+            self._ScanInstances = self.PLClibraryHandle.ScanInstances
+            self._ScanInstances.restype = None
+            self._ScanInstances.argtypes = [SCAN_CB_FUNC, ctypes.c_void_p]
+
             self._loading_error = None
 
         except Exception:
@@ -316,6 +331,7 @@ class PLCObject(object):
         self._suspendDebug = lambda x: -1
         self._resumeDebug = lambda: None
         self._PythonIterator = lambda *a: ""
+        self._ScanInstances = lambda cb, ud: None
         self._GetLogCount = None
         self._LogMessage = None
         self._GetLogMessage = None
@@ -862,6 +878,75 @@ class PLCObject(object):
 
     def GetVersions(self):
         return platform_module.system() + " " + platform_module.release()
+
+    def PLCScan(self):
+        """Walk PLC instance tree, yielding for every node.
+
+        Yields (path, type_enum_value, type_category, count) tuples.
+        The C scan runs in a background thread; each callback blocks
+        until the generator consumer requests the next item.
+        """
+        item_ready = Event()
+        item_consumed = Event()
+        result = None
+        done = False
+        abort = False
+        stack = []  # [[path_prefix, flat_count, type_category, done], ...]
+
+        @SCAN_CB_FUNC
+        def scan_callback(type_enum_value, ptr, cumulated, local, count, name, userdata):
+            nonlocal result, abort
+            name = name.decode() if name else ""
+
+            # Mark completed level
+            if stack and stack[-1][1] == (local + count):
+                stack[-1][3] = True
+
+            type_category = IEC_types_enum.Categorize(type_enum_value)
+
+            path = name if not stack else (stack[-1][0] + (
+                "[%d/%d]" % (local, stack[-1][1])
+                if stack[-1][2] == IEC_types_enum.ARRAY else
+                "." + name))
+
+            if type_category in [IEC_types_enum.ARRAY, IEC_types_enum.STRUCT]:
+                stack.append([path, count, type_category, False])
+            else:
+                # Pop completed level(s)
+                while stack and stack[-1][3]:
+                    stack.pop()
+
+            # Hand item to generator, wait for it to consume
+            result = (path, type_category, type_enum_value, ptr, cumulated, local, count, name, userdata)
+            item_ready.set()
+            item_consumed.wait()
+            item_consumed.clear()
+
+            if abort:
+                return 0  # stop traversal
+            return 1  # continue and recurse
+
+        def run_scan():
+            nonlocal done
+            self._ScanInstances(scan_callback, None)
+            done = True
+            item_ready.set()
+
+        t = Thread(target=run_scan, name="PLCScan")
+        t.start()
+
+        try:
+            while True:
+                item_ready.wait()
+                item_ready.clear()
+                if done:
+                    break
+                yield result
+                item_consumed.set()
+        finally:
+            abort = True
+            item_consumed.set()
+            t.join()
 
     @RunInMain
     def ExtendedCall(self, method, argument):

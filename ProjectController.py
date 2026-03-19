@@ -1175,10 +1175,13 @@ class ProjectController(ConfigTreeNode, PLCControler):
         resolve_lines = self._gen_resolve_function(instances_c)
         retain_lines = self._gen_build_retain_list(instances_c)
 
+        scan_lines = self._gen_scan_instances(instances_c)
+
         return targets.GetCode("plc_debug.c") % {
             "extern_variables_declarations": "\n".join(extern_lines),
             "resolve_function": "\n".join(resolve_lines),
             "build_retain_list": "\n".join(retain_lines),
+            "scan_instances": "\n".join(scan_lines),
             "var_access_code": targets.GetCode("var_access.c")
         }
 
@@ -1279,6 +1282,40 @@ class ProjectController(ConfigTreeNode, PLCControler):
             "    retain_total_size = ctx.total_size;",
             "}",
         ]
+        return lines
+
+    @staticmethod
+    def _gen_scan_instances(instances_c):
+        lines = [
+            "void ScanInstances(__scan_callback_t cb, void *userdata)",
+            "{",
+            "    __scan_ctx_t ctx = { cb, userdata };",
+            "    unsigned int cum;",
+            "    int ret;",
+        ]
+        for (path, flat_count, dims, base_type,
+             c_name, _c_type, recurse_fn, needs_deref) in instances_c:
+            lines.append("    /* %s */" % path)
+            if recurse_fn is None:
+                # Simple leaf: announce to callback
+                lines += [
+                    "    cb(%s_ENUM, &%s, 0, 0, 1,"
+                    " \"%s\", userdata);"
+                    % (base_type.upper(), c_name, path),
+                ]
+            else:
+                data_ptr = ProjectController._data_ptr(c_name, needs_deref)
+                lines += [
+                    "    ret = cb(%s_ENUM, %s, 0, 0, %du,"
+                    " \"%s\", userdata);"
+                    % ("ARRAY" if dims else "STRUCT", data_ptr, flat_count, path),
+                    "    if (ret == 1) {",
+                    "        cum = 0;",
+                    "        %s(%s, __scan_cb, &ctx, &cum);"
+                    % (recurse_fn, data_ptr),
+                    "    }",
+                ]
+        lines.append("}")
         return lines
 
     def Generate_plc_main(self):

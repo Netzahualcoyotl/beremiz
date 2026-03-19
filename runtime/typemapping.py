@@ -6,6 +6,7 @@
 
 from ctypes import *
 from datetime import timedelta as td
+from enum import Enum
 
 class IEC_STRING(Structure):
     """
@@ -109,3 +110,19 @@ def ValueToIECBytes(iectype, value):
         return None
     c_type, _unpack_func, pack_func = TypeTranslator[iectype]
     return bytes(pack_func(c_type, value))
+
+class IEC_types_enum(Enum):
+    SIMPLE = 0
+    POINTED = 32
+    OUTPUT = 64
+    SFC = 96
+    STRUCT = 128
+    ARRAY = 160
+    UNKNOWN = 255
+
+    @classmethod
+    def Categorize(cls, type_enum_value):
+        "Return corresponding lower enumeration"
+        for e in reversed(cls):
+            if e.value <= type_enum_value:
+                return e

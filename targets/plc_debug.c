@@ -200,6 +200,32 @@ static int __resolve_cb(
 
 %(build_retain_list)s
 
+/***
+ * Instance tree scan — call a Python callback for every node
+ * using __recurse accessors from POUS_accessors.h
+ **/
+typedef int (*__scan_callback_t)(
+    __IEC_types_enum type, void *ptr,
+    unsigned int cumulated, unsigned int local,
+    unsigned int count, const char *name, void *userdata);
+
+typedef struct {
+    __scan_callback_t callback;
+    void *userdata;
+} __scan_ctx_t;
+
+static int __scan_cb(
+    __IEC_types_enum type, void *ptr,
+    unsigned int cumulated, unsigned int local,
+    unsigned int count, const char *name, void *userdata)
+{
+    __scan_ctx_t *ctx = (__scan_ctx_t *)userdata;
+    return ctx->callback(type, ptr, cumulated, local, count,
+                         name ? name : "", ctx->userdata);
+}
+
+%(scan_instances)s
+
 void Remind(unsigned int offset, unsigned int count, void * p);
 
 extern int CheckRetainBuffer(void);
