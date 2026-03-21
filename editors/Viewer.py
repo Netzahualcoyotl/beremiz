@@ -1018,12 +1018,12 @@ class Viewer(EditorPanel, DebugViewer):
         elif isinstance(element, LD_Contact):
             iec_path = "%s.%s" % (instance_path, element.GetName())
         elif isinstance(element, SFC_Step):
-            iec_path = "%s.%s.X" % (instance_path, element.GetName())
+            iec_path = "%s.%s_X" % (instance_path, element.GetName())
         elif isinstance(element, SFC_Transition):
             connectors = element.GetConnectors()
             previous_steps = self.GetPreviousSteps(connectors["inputs"])
             next_steps = self.GetNextSteps(connectors["outputs"])
-            iec_path = "%s.%s->%s" % (instance_path, ",".join(previous_steps), ",".join(next_steps))
+            iec_path = "%s.%s_TO_%s" % (instance_path, "_".join(previous_steps), "_".join(next_steps))
         return iec_path
 
     def GetWireModifier(self, wire):

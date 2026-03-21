@@ -428,15 +428,6 @@ void __publish_debug(void)
         goto error_cleanup;                                                             \
     }
 
-/* SFC types (STEP, TRANSITION, ACTION) are stored as __IEC_BOOL_t* — see var_access.c */
-#define __ForceVariable_case_sfc(TYPENAME)                                              \
-        case TYPENAME##_ENUM :                                                          \
-            __ForceVariable_checksize(BOOL)                                             \
-            force_list_addvar_cursor->var = resolved;                                   \
-            ((__IEC_BOOL_t *)varp)->flags |= __IEC_FORCE_FLAG;                         \
-            ((__IEC_BOOL_t *)varp)->value = *((BOOL *)force);                          \
-            break;
-
 #define __ForceVariable_case_t(TYPENAME)                                                \
         case TYPENAME##_ENUM :                                                          \
             __ForceVariable_checksize(TYPENAME)                                         \
@@ -505,7 +496,6 @@ int RegisterDebugVariable(uint32_t idx, void* force, size_t force_size)
                 switch(vartype){
                     __ANY(__ForceVariable_case_t)
                     __ANY(__ForceVariable_case_p)
-                    __ANY_SFC(__ForceVariable_case_sfc)
                 default:
                     break;
                 }
@@ -525,11 +515,6 @@ error_cleanup:
     return error_code;
 
 }
-
-#define ResetForcedVariable_case_sfc(TYPENAME)                                          \
-        case TYPENAME##_ENUM :                                                          \
-            ((__IEC_BOOL_t *)varp)->flags &= ~__IEC_FORCE_FLAG;                        \
-            break;
 
 #define ResetForcedVariable_case_t(TYPENAME)                                            \
         case TYPENAME##_ENUM :                                                          \
@@ -557,7 +542,6 @@ void ResetDebugVariables(void)
         switch(force_list_apply_cursor->var.type){
             __ANY(ResetForcedVariable_case_t)
             __ANY(ResetForcedVariable_case_p)
-            __ANY_SFC(ResetForcedVariable_case_sfc)
         default:
             break;
         }

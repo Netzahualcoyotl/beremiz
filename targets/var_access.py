@@ -7,13 +7,12 @@ class TypeClass(IntEnum):
     PROGRAM = 2
 
 def _parse_path(path_str):
-    """Parse 'A.B[1].C[2][3]' into [('A',[]), ('B',[1]), ('C',[2,3])].
-    Also handles SFC transition names with '->' (e.g. 'START->COUNT')."""
+    """Parse 'A.B[1].C[2][3]' into [('A',[]), ('B',[1]), ('C',[2,3])]."""
     result = []
     for seg in path_str.split('.'):
-        m = _re.fullmatch(r'([\w>,-]+)((?:\[\d+\])*)', seg)
+        m = _re.fullmatch(r'(\w+)((?:\[\d+\])*)', seg)
         if not m:
-            raise ValueError('Invalid path segment: {!r}'.format(seg))
+            return None
         name = m.group(1).upper()
         indices = [int(x) for x in _re.findall(r'\[(\d+)\]', m.group(2))]
         result.append((name, indices))
