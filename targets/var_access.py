@@ -5,6 +5,10 @@ class TypeClass(IntEnum):
     STRUCT = 0
     FB = 1
     PROGRAM = 2
+    ARRAY = 3
+    ENUM = 4
+    DERIVED = 5
+    SIMPLE = 6
 
 def _parse_path(path_str):
     """Parse 'A.B[1].C[2][3]' into [('A',[]), ('B',[1]), ('C',[2,3])]."""
@@ -18,12 +22,12 @@ def _parse_path(path_str):
         result.append((name, indices))
     return result
 
-def _dims_to_strides(offset, dims):
-    """Compute strides from total flat offset and dimension sizes."""
+def _dims_to_strides(flat_count, dims):
+    """Compute strides from total flat count and dimension sizes."""
     if not dims:
         return ()
     strides = []
-    remaining = offset
+    remaining = flat_count
     for d in dims:
         remaining //= d
         strides.append(remaining)
@@ -54,66 +58,179 @@ def _make_flat(members, POUS):
         return cumulated, base_type
     return flat
 
-def _build_pous(pous_list):
-    """Build _POUS dict from POUS list with (name, type_class, members) tuples."""
+
+def _build_type_info(pous_list):
+    """Build type info dict from POUS list.
+
+    Returns {TYPE_NAME: (flat_count, dims_or_none, element_type_or_none, type_class)}
+    """
+    info = {}
+    for entry in pous_list:
+        tc = entry[1]
+        name = entry[0].upper()
+        if tc in (TypeClass.STRUCT, TypeClass.FB, TypeClass.PROGRAM):
+            info[name] = (entry[2], None, None, tc)
+        elif tc == TypeClass.ARRAY:
+            info[name] = (entry[3], entry[4], entry[2].upper(), tc)
+        elif tc == TypeClass.ENUM:
+            info[name] = (1, None, None, tc)
+        elif tc == TypeClass.DERIVED:
+            info[name] = (1, None, entry[2].upper(), tc)
+    return info
+
+
+def _resolve_base_type(type_name, type_info):
+    """Follow DERIVED chain to reach the ultimate base type."""
+    seen = set()
+    while type_name in type_info:
+        ti = type_info[type_name]
+        if ti[3] == TypeClass.ENUM:
+            type_name = "DINT"
+            break
+        if ti[3] != TypeClass.DERIVED:
+            break
+        if type_name in seen:
+            break
+        seen.add(type_name)
+        type_name = ti[2]
+    return type_name
+
+
+def _build_pous(pous_list, type_info):
+    """Build _POUS dict for path resolution.
+
+    New POUS format: members are (var_name, type_name) pairs.
+    Flat counts and dims are resolved from type_info.
+    """
     pous = {}
-    for type_name, _type_class, members in pous_list:
+    for entry in pous_list:
+        tc = entry[1]
+        if tc not in (TypeClass.STRUCT, TypeClass.FB, TypeClass.PROGRAM):
+            continue
+
+        type_name = entry[0].upper()
+        members = entry[3]
+
         member_dict = {}
         cumulated = 0
-        for var_name, offset, dims, base_type in members:
-            strides = _dims_to_strides(offset, dims)
-            member_dict[var_name.upper()] = (cumulated, strides, base_type.upper())
-            cumulated += offset
-        pous[type_name.upper()] = _make_flat(member_dict, pous)
+        for var_name, var_type in members:
+            var_type_upper = _resolve_base_type(var_type.upper(), type_info)
+            ti = type_info.get(var_type_upper)
+            if ti is not None:
+                flat_count = ti[0]
+                dims = ti[1]
+                base_type = var_type_upper
+            else:
+                flat_count = 1
+                dims = None
+                base_type = var_type_upper
+
+            strides = _dims_to_strides(flat_count, dims) if dims else ()
+            member_dict[var_name.upper()] = (cumulated, strides, base_type)
+            cumulated += flat_count
+
+        pous[type_name] = _make_flat(member_dict, pous)
     return pous
 
-def path_to_flat(path_str, POUS):
-    """Convert a dotted IEC 61131-3 variable path to (flat_index, base_type)."""
-    segments = _parse_path(path_str)
-    if not segments:
-        raise ValueError('Empty path')
-    pou_name = segments[0][0]
-    if pou_name not in POUS:
-        raise KeyError('Unknown POU: {!r}'.format(pou_name))
-    return POUS[pou_name](segments[1:], 0)
+
+def _build_members_by_type(pous_list):
+    """Build dict mapping TYPE_NAME -> [(var_name, var_type), ...] for FB/STRUCT/PROGRAM types."""
+    result = {}
+    for entry in pous_list:
+        tc = entry[1]
+        if tc in (TypeClass.STRUCT, TypeClass.FB, TypeClass.PROGRAM):
+            result[entry[0].upper()] = entry[3]
+    return result
 
 
 class POUSData:
     """Wraps POUS.py content for IDE-side path resolution and C code generation."""
 
     def __init__(self, pous_list, instances_list, ticktime):
-        self.pous_list = pous_list
-        self.instances = instances_list
+        self._pous_list_raw = pous_list
+        self._instances_raw = instances_list
         self.ticktime = ticktime
-        self._pous = _build_pous(pous_list)
-        # type_class lookup: type_name -> TypeClass
-        self._type_classes = {name.upper(): tc for name, tc, _members in pous_list}
+        self._type_info = _build_type_info(self._pous_list_raw)
+        self._type_classes = {entry[0].upper(): entry[1] for entry in self._pous_list_raw}
+        self._members_by_type = _build_members_by_type(self._pous_list_raw)
+        self._pous = _build_pous(self._pous_list_raw, self._type_info)
         self._build_instance_index()
 
+    def _instance_path(self, name, domain):
+        """Construct instance path from name and domain."""
+        return (("CONFIG." + domain) if domain != "CONFIG" else domain) + '.' + name
+
     def _build_instance_index(self):
+        """Build instance index from new-format instances."""
         self._inst_by_path = {}
         cumulated = 0
-        for path, flat_count, dims, base_type in self.instances:
-            self._inst_by_path[path.upper()] = (cumulated, flat_count, dims, base_type.upper())
+        for name, domain, base_type, type_class, flat_count in self._instances_raw:
+            path = self._instance_path(name, domain).upper()
+            dims = self._type_info.get(base_type.upper(), (None, None))[1] \
+                if type_class == TypeClass.ARRAY else ()
+            self._inst_by_path[path] = (cumulated, flat_count, dims, base_type.upper())
             cumulated += flat_count
         self._total_flat_count = cumulated
 
-    def type_class_of(self, type_name):
-        """Return TypeClass for a type name, or None if not in POUS."""
-        return self._type_classes.get(type_name)
+    @property
+    def instances_c(self):
+        """Yield (path, flat_count, base_type, type_class, c_name, c_type, recurse_fn, needs_deref) for each instance."""
+        for name, domain, base_type, type_class, flat_count in self._instances_raw:
+            path = self._instance_path(name, domain)
+            c_type, c_recurse, needs_deref = self.c_type_and_recurse(base_type)
+            c_name = self.iec_path_to_c_name(path)
+            yield (path, flat_count, base_type, type_class, c_name, c_type, c_recurse, needs_deref)
+
+    def count_fb_instances(self, target_types):
+        """Count total instances of given FB types, recursively through type tree."""
+        target_set = {t.upper() for t in target_types}
+        cache = {}
+
+        def count_in_type(type_name):
+            key = type_name.upper()
+            if key in cache:
+                return cache[key]
+            cache[key] = 0  # guard against recursion
+            count = 0
+            members = self._members_by_type.get(key)
+            if members:
+                for _var_name, var_type in members:
+                    var_type_upper = var_type.upper()
+                    ti = self._type_info.get(var_type_upper)
+                    multiplicity = 1
+                    if ti and ti[1]:  # has dims (array)
+                        for d in ti[1]:
+                            multiplicity *= d
+                    if var_type_upper in target_set:
+                        count += multiplicity
+                    else:
+                        count += multiplicity * count_in_type(var_type)
+            cache[key] = count
+            return count
+
+        total = 0
+        for name, domain, base_type, _type_class, flat_count in self._instances_raw:
+            ti = self._type_info.get(base_type.upper())
+            multiplicity = 1
+            if ti and ti[1]:  # array dims
+                for d in ti[1]:
+                    multiplicity *= d
+            if base_type.upper() in target_set:
+                total += multiplicity
+            else:
+                total += multiplicity * count_in_type(base_type)
+        return total
 
     def resolve_path(self, iec_path):
         """Resolve IEC path to (global_flat_index, leaf_base_type) or (None, None)."""
         segments = _parse_path(iec_path)
         if not segments:
             return (None, None)
-        # Find the longest matching instance prefix (by name, ignoring indices)
         for n in range(len(segments), 0, -1):
             prefix = '.'.join(name for name, _idx in segments[:n])
             inst = self._inst_by_path.get(prefix)
             if inst is not None:
                 base_offset, flat_count, dims, base_type = inst
-                # Apply array indices on the last matched segment if instance is an array
                 _last_name, last_indices = segments[n - 1]
                 if dims and last_indices:
                     strides = _dims_to_strides(flat_count, dims)
@@ -136,46 +253,29 @@ class POUSData:
         return (None, None)
 
     def iec_path_to_c_name(self, iec_path):
-        """Derive C variable name from IEC instance path.
-
-        'config.X' -> 'CONFIG__X'
-        'config.resource.X' -> 'RESOURCE__X'
-        """
+        """Derive C variable name from IEC instance path."""
         parts = iec_path.split('.')
         if len(parts) <= 2:
             return '__'.join(p.upper() for p in parts)
         else:
             return '__'.join(p.upper() for p in parts[1:])
 
-    def c_type_and_recurse(self, base_type, dims):
-        """Return (c_extern_type, c_recurse_fn, needs_value_deref) for an instance.
-
-        c_extern_type: type string for extern declaration
-        c_recurse_fn: name of __recurse function, or None for simple leaf
-        needs_value_deref: True if ptr needs .value to access raw data
-        """
+    def c_type_and_recurse(self, base_type):
+        """Return (c_extern_type, c_recurse_fn, needs_value_deref) for a type."""
         uc = base_type.upper()
         tc = self._type_classes.get(uc)
 
-        if dims:
-            array_name = '__ARRAY_OF_' + uc + '_' + '_'.join(str(d) for d in dims)
-            return (
-                '__IEC_' + array_name + '_t',
-                array_name + '__recurse',
-                True
-            )
-
         if tc is not None:
-            if tc == TypeClass.STRUCT:
+            if tc in (TypeClass.STRUCT, TypeClass.ARRAY):
                 return (
                     '__IEC_' + uc + '_t',
                     uc + '__recurse',
                     True
                 )
-            else:
+            elif tc in (TypeClass.FB, TypeClass.PROGRAM):
                 return (
                     uc + '_data__',
-                    uc + '_data____recurse',
+                    uc + '__recurse',
                     False
                 )
 

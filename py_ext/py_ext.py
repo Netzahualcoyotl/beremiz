@@ -32,41 +32,8 @@ class PythonLibrary(POULibrary):
         plc_python_code = plc_python_file.read()
         plc_python_file.close()
 
-        target_fbs = {"PYTHON_EVAL", "PYTHON_POLL"}
-
-        # Count PYTHON_EVAL/PYTHON_POLL instances, including nested ones.
-        # per_type[T] = number of python-eval FBs within one instance of type T.
-        per_type = {}
-        def count_in_type(type_name):
-            key = type_name.upper()
-            if key in per_type:
-                return per_type[key]
-            per_type[key] = 0  # guard against recursion
-            count = 0
-            for name, _tc, members in pous_data.pous_list:
-                if name.upper() == key:
-                    for _mname, _flat, dims, base_type in members:
-                        multiplicity = 1
-                        for d in dims:
-                            multiplicity *= d
-                        if base_type.upper() in target_fbs:
-                            count += multiplicity
-                        else:
-                            count += multiplicity * count_in_type(base_type)
-                    break
-            per_type[key] = count
-            return count
-
-        python_eval_fb_count = 0
-        for _path, _flat_count, dims, base_type in pous_data.instances:
-            multiplicity = 1
-            for d in dims:
-                multiplicity *= d
-            if base_type.upper() in target_fbs:
-                python_eval_fb_count += multiplicity
-            else:
-                python_eval_fb_count += multiplicity * count_in_type(base_type)
-        python_eval_fb_count = max(1, python_eval_fb_count)
+        python_eval_fb_count = max(1, pous_data.count_fb_instances(
+            {"PYTHON_EVAL", "PYTHON_POLL"}))
 
         # prepare python code
         plc_python_code = plc_python_code % {

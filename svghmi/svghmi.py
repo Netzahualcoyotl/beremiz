@@ -192,9 +192,8 @@ class SVGHMILibrary(POULibrary):
         assert(found_heartbeat)
 
         extern_variables_declarations += [
-            "extern %s %s;" % (pous_data.c_type_and_recurse(base_type, dims)[0],
-                               pous_data.iec_path_to_c_name(path))
-            for path, _flat_count, dims, base_type in pous_data.instances
+            "extern %s %s;" % (c_type, c_name)
+            for _path, _fc, _bt, _tc, c_name, c_type, _r, _nd in pous_data.instances_c
         ]
 
         # C code to observe/access HMI tree variables

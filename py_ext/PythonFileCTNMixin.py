@@ -356,6 +356,8 @@ IEC_%(IECtype)s __%(name)s_onchange_lastval;
  * for safe global variables access
  */
 #include "iec_types_all.h"
+#include "iec_std_lib.h"
+#include "accessor.h"
 #include "POUS.h"
 #include "config.h"
 #include "beremiz.h"

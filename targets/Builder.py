@@ -98,9 +98,6 @@ class Builder:
     def GetLibraries(self, ctr, typestack):
         return []
 
-    def GetPLCHeadersPreamble(self):
-        return '#include <stdio.h>\n'
-
     def Transfer(self, connector):
         self.CTRInstance.logger.write_error("Target doesn't support direct transfer/flashing !\n")
         return False

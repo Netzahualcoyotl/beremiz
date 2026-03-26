@@ -15,6 +15,7 @@
  * */
 
 #include "iec_types_all.h"
+#include "accessor.h"
 #include "POUS.h"
 #include <string.h>
 

@@ -24,9 +24,19 @@ void __publish_debug (void){}
 #include <stdio.h>
 #include <errno.h>
 
-#include "iec_types_all.h"
+#include "beremiz.h"
+
+#include "accessor.h"
+#include "iec_std_lib.h"
 #include "POUS.h"
-#include "POUS_accessors.h"
+
+#include "undef_macros.h"
+#include "pous_flatcount_c.h"
+#include "POUS.h"
+
+#include "undef_macros.h"
+#include "pous_recurse_c.h"
+#include "POUS.h"
 
 typedef unsigned int uint32_t;
 

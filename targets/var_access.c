@@ -25,6 +25,8 @@ static int UnpackVar(__Unpack_desc_type *dsc, void **value_p, char *flags, size_
     switch(dsc->type){
         __ANY(__Unpack_case_t)
         __ANY(__Unpack_case_p)
+        __Unpack_case_t(ENUM)
+        __Unpack_case_p(ENUM)
     default:
         return 0; /* should never happen */
     }

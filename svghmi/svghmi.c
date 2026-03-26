@@ -1,7 +1,9 @@
 #include <pthread.h>
 #include <errno.h>
 #include <string.h>
+#include <stdio.h>
 #include "iec_types_all.h"
+#include "accessor.h"
 #include "POUS.h"
 #include "config.h"
 #include "beremiz.h"
