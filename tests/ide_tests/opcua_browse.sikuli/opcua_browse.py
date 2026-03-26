@@ -33,6 +33,8 @@ def test(app):
  
     app.type(Key.ENTER)
 
+    app.type(Key.RIGHT)
+
     app.dragNdrop(["TestIn", "Testln","Testin"], "output variables")
 
     app.wait(1)

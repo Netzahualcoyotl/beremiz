@@ -34,6 +34,8 @@ def test(app):
     app.doubleClick("TestObject")
  
     app.type(Key.ENTER)
+
+    app.type(Key.RIGHT)
  
     app.dragNdrop(["TestIn", "Testln", "Testin"], "output variables")
 
