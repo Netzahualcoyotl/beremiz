@@ -360,6 +360,14 @@ int WaitDebugData(unsigned int *tick)
     if (PLC_shutdown) return 1;
     /* Wait signal from PLC thread */
     res = pthread_mutex_lock(&debug_wait_mutex);
+
+    pthread_mutex_lock(&debug_mutex);
+    /*__DEBUG is protected by this mutex */
+    int tmp__DEBUG = __DEBUG;
+    pthread_mutex_unlock(&debug_mutex);
+    /* in case debug was disabled while waiting */
+    if(!tmp__DEBUG) return ENODATA;
+
     *tick = __debug_tick;
     return res;
 }
@@ -380,8 +388,13 @@ int suspendDebug(int disable)
     pthread_mutex_lock(&debug_mutex);
     /*__DEBUG is protected by this mutex */
     __DEBUG = !disable;
-    if (disable)
+    if (disable){
+        /* once debug disabled, PLC does no-op 
+           and no call to resumeDebug is expected */
         pthread_mutex_unlock(&debug_mutex);
+        /* unblocks trace thread waiting for data */
+        pthread_mutex_unlock(&debug_wait_mutex);
+    }
     return 0;
 }
 

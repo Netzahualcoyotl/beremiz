@@ -360,6 +360,7 @@ void __publish_debug(void)
                 __IEC_types_enum vartype = force_list_apply_cursor->var.type;
                 switch(vartype){
                     __ANY(__ReForceOutput_case_p)
+                    __ReForceOutput_case_p(ENUM)
                 default:
                     break;
                 }
@@ -438,45 +439,82 @@ void __publish_debug(void)
         goto error_cleanup;                                                             \
     }
 
-#define __ForceVariable_case_t(TYPENAME)                                                \
-        case TYPENAME##_ENUM :                                                          \
-            __ForceVariable_checksize(TYPENAME)                                         \
-            /* add to force_list*/                                                      \
+/*
+ * Force setup macros — no size check, caller guarantees type match.
+ * Used by ForceVariable(); RegisterDebugVariable() validates size first.
+ **/
+#define __Force_case_t(TYPENAME)                                                        \
+        case TYPENAME##_ENUM: {                                                         \
             force_list_addvar_cursor->var = resolved;                                   \
             ((__IEC_##TYPENAME##_t *)varp)->flags |= __IEC_FORCE_FLAG;                  \
-            ((__IEC_##TYPENAME##_t *)varp)->value = *((TYPENAME *)force);               \
-            break;
-#define __ForceVariable_case_p(TYPENAME)                                                \
-        case TYPENAME##_P_ENUM :                                                        \
-        case TYPENAME##_O_ENUM :                                                        \
-            __ForceVariable_checksize(TYPENAME)                                         \
-            {                                                                           \
-                char *next_cursor = force_buffer_cursor + sizeof(TYPENAME);             \
-                if(next_cursor <= force_buffer_end ){                                   \
-                    /* add to force_list*/                                              \
-                    force_list_addvar_cursor->var = resolved;                           \
-                    /* outputs real value must be systematically forced */              \
-                    if(vartype == TYPENAME##_O_ENUM)                                    \
-                        *(((__IEC_##TYPENAME##_p *)varp)->value) = *((TYPENAME *)force);\
-                    /* save pointer to backup */                                        \
-                    force_list_addvar_cursor->value_pointer_backup =                    \
-                        ((__IEC_##TYPENAME##_p *)varp)->value;                          \
-                    /* store forced value in force_buffer */                            \
-                    *((TYPENAME *)force_buffer_cursor) = *((TYPENAME *)force);          \
-                    /* replace pointer with pointer to force_buffer */                  \
-                    ((__IEC_##TYPENAME##_p *)varp)->value =                             \
-                        (TYPENAME *)force_buffer_cursor;                                \
-                    /* mark variable as forced */                                       \
-                    ((__IEC_##TYPENAME##_p *)varp)->flags |= __IEC_FORCE_FLAG;          \
-                    /* inc force_buffer cursor */                                       \
-                    force_buffer_cursor = next_cursor;                                  \
-                } else {                                                                \
-                    error_code = FORCE_BUFFER_OVERFLOW;                                 \
-                    goto error_cleanup;                                                 \
-                }                                                                       \
-            }                                                                           \
-            break;
+            ((__IEC_##TYPENAME##_t *)varp)->value = *((TYPENAME *)force_value);         \
+            break; }
 
+#define __Force_case_p(TYPENAME)                                                        \
+        case TYPENAME##_P_ENUM:                                                         \
+        case TYPENAME##_O_ENUM: {                                                       \
+            char *next_cursor = force_buffer_cursor + sizeof(TYPENAME);                 \
+            if(next_cursor > force_buffer_end)                                          \
+                return FORCE_BUFFER_OVERFLOW;                                           \
+            force_list_addvar_cursor->var = resolved;                                   \
+            /* outputs real value must be systematically forced */                      \
+            if(vartype == TYPENAME##_O_ENUM)                                            \
+                *(((__IEC_##TYPENAME##_p *)varp)->value) = *((TYPENAME *)force_value);  \
+            /* save pointer to backup */                                                \
+            force_list_addvar_cursor->value_pointer_backup =                            \
+                ((__IEC_##TYPENAME##_p *)varp)->value;                                  \
+            /* store forced value in force_buffer */                                    \
+            *((TYPENAME *)force_buffer_cursor) = *((TYPENAME *)force_value);            \
+            /* replace pointer with pointer to force_buffer */                          \
+            ((__IEC_##TYPENAME##_p *)varp)->value = (TYPENAME *)force_buffer_cursor;    \
+            /* mark variable as forced */                                               \
+            ((__IEC_##TYPENAME##_p *)varp)->flags |= __IEC_FORCE_FLAG;                  \
+            /* inc force_buffer cursor */                                               \
+            force_buffer_cursor = next_cursor;                                          \
+            break; }
+
+/*
+ * ForceVariable — set up force_list entry and apply force to a variable.
+ *
+ * Called by RegisterDebugVariable (after size check) and by execute_copy_ops
+ * (via plc_force_var_fn function pointer) to reconstruct forces across a hot-swap.
+ * force_value must point to a value of the correct size for type.
+ **/
+int ForceVariable(void *ptr, __IEC_types_enum type, void *force_value)
+{
+    if(force_list_addvar_cursor > force_list_end)
+        return FORCE_LIST_OVERFLOW;
+
+    void *varp = ptr;
+    __IEC_types_enum vartype = type;
+    resolved_var_t resolved = {ptr, type};
+
+    /* GCC false-positive: __IEC_STRING_t.flags is at offset 127;
+     * GCC sees small objects and warns. STRING_ENUM only resolves to __IEC_STRING_t. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+    switch(type){
+        __ANY(__Force_case_t)
+        __ANY(__Force_case_p)
+        __Force_case_t(ENUM)
+        __Force_case_p(ENUM)
+        default: return 0;
+    }
+#pragma GCC diagnostic pop
+    force_list_addvar_cursor++;
+    return 0;
+}
+
+/* Size-check-only case macros for RegisterDebugVariable.
+ * Validate Python-provided force_size before delegating to ForceVariable. */
+#define __ForceVariable_checksize_t(TYPENAME)                                           \
+        case TYPENAME##_ENUM:                                                           \
+            __ForceVariable_checksize(TYPENAME) break;
+
+#define __ForceVariable_checksize_p(TYPENAME)                                           \
+        case TYPENAME##_P_ENUM:                                                         \
+        case TYPENAME##_O_ENUM:                                                         \
+            __ForceVariable_checksize(TYPENAME) break;
 
 void ResetDebugVariables(void);
 
@@ -494,28 +532,18 @@ int RegisterDebugVariable(uint32_t idx, void* force, size_t force_size)
             goto error_cleanup;
         }
         if(force){
-            if(force_list_addvar_cursor <= force_list_end){
-                void *varp = resolved.ptr;
-                __IEC_types_enum vartype = resolved.type;
-
-                /* GCC false-positive: __IEC_STRING_t.flags is at offset 127;
-                 * GCC sees small objects in resolve_instance and warns.
-                 * In practice STRING_ENUM only resolves to __IEC_STRING_t. */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wstringop-overflow"
-                switch(vartype){
-                    __ANY(__ForceVariable_case_t)
-                    __ANY(__ForceVariable_case_p)
-                default:
-                    break;
-                }
-#pragma GCC diagnostic pop
-                /* inc force_list cursor */
-                force_list_addvar_cursor++;
-            } else {
-                error_code = FORCE_LIST_OVERFLOW;
-                goto error_cleanup;
+            /* Validate size of Python-provided force data before applying */
+            __IEC_types_enum vartype = resolved.type;
+            switch(vartype){
+                __ANY(__ForceVariable_checksize_t)
+                __ANY(__ForceVariable_checksize_p)
+                __ForceVariable_checksize_t(ENUM)
+                __ForceVariable_checksize_p(ENUM)
+                default: break;
             }
+            error_code = ForceVariable(resolved.ptr, resolved.type, force);
+            if(error_code)
+                goto error_cleanup;
         }
     }
     return 0;
@@ -552,6 +580,8 @@ void ResetDebugVariables(void)
         switch(force_list_apply_cursor->var.type){
             __ANY(ResetForcedVariable_case_t)
             __ANY(ResetForcedVariable_case_p)
+            ResetForcedVariable_case_t(ENUM)
+            ResetForcedVariable_case_p(ENUM)
         default:
             break;
         }

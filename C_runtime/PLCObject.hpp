@@ -21,14 +21,11 @@ using namespace erpcShim;
 
 #define MAX_ELEMENTS_TRACE 10
 
-#define FOR_EACH_PLC_SYMBOLS_DO(ACTION) \
+// Symbols resolved from the IOs shared object (startPLC, stopPLC, logging, debug control)
+#define FOR_EACH_IOS_SYMBOLS_DO(ACTION) \
     ACTION(PLC_ID)\
     ACTION(startPLC)\
     ACTION(stopPLC)\
-    ACTION(ResetDebugVariables)\
-    ACTION(RegisterDebugVariable)\
-    ACTION(FreeDebugData)\
-    ACTION(GetDebugData)\
     ACTION(suspendDebug)\
     ACTION(resumeDebug)\
     ACTION(ResetLogCount)\
@@ -36,6 +33,17 @@ using namespace erpcShim;
     ACTION(LogMessage)\
     ACTION(GetLogMessage)\
     ACTION(PLC_GetTime)
+
+// Symbols resolved from the logic shared object (debug variable access)
+#define FOR_EACH_LOGIC_SYMBOLS_DO(ACTION) \
+    ACTION(ResetDebugVariables)\
+    ACTION(RegisterDebugVariable)\
+    ACTION(FreeDebugData)\
+    ACTION(GetDebugData)
+
+#define FOR_EACH_PLC_SYMBOLS_DO(ACTION) \
+    FOR_EACH_IOS_SYMBOLS_DO(ACTION)\
+    FOR_EACH_LOGIC_SYMBOLS_DO(ACTION)
 
 extern "C" {   
     typedef struct s_PLCSyms{

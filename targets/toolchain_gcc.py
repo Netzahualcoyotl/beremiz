@@ -135,9 +135,12 @@ class toolchain_gcc(Builder):
             Builder_LDFLAGS = replace_sysroot(Builder_LDFLAGS)
 
         # ----------------- GENERATE OBJECT FILES ------------------------
-        obns = []
-        objs = []
-        must_link = not os.path.exists(self.bin_path)
+        ios_obns = []
+        ios_objs = []
+        logic_obns = []
+        logic_objs = []
+        must_link_ios = not os.path.exists(self.bin_path)
+        must_link_logic = not os.path.exists(self.logic_bin_path)
         for Location, CFilesAndCFLAGS, _DoCalls, *_req in self.CTRInstance.LocationCFilesAndCFLAGS:
             if CFilesAndCFLAGS:
                 if Location:
@@ -156,7 +159,10 @@ class toolchain_gcc(Builder):
                     if match and os.path.exists(objectfilename):
                         self.CTRInstance.logger.write("   [pass]  "+bn+" -> "+obn+"\n")
                     else:
-                        must_link = True
+                        if Location:
+                            must_link_ios = True
+                        else:
+                            must_link_logic = True
 
                         self.CTRInstance.logger.write("   [CC]  "+bn+" -> "+obn+"\n")
 
@@ -174,42 +180,70 @@ class toolchain_gcc(Builder):
                             self.srcmd5.pop(bn)
                             self.CTRInstance.logger.write_error(_("C compilation of %s failed.\n") % bn)
                             return False
-                    obns.append(obn)
-                    objs.append(objectfilename)
+                    if Location:
+                        ios_obns.append(obn)
+                        ios_objs.append(objectfilename)
+                    else:
+                        logic_obns.append(obn)
+                        logic_objs.append(objectfilename)
                 elif CFile.endswith(".o"):
-                    obns.append(os.path.basename(CFile))
-                    objs.append(CFile)
+                    if Location:
+                        ios_obns.append(os.path.basename(CFile))
+                        ios_objs.append(CFile)
+                    else:
+                        logic_obns.append(os.path.basename(CFile))
+                        logic_objs.append(CFile)
 
-        # ---------------- GENERATE OUTPUT FILE --------------------------
-        # Link all the object files into one binary file
+        # ---------------- GENERATE OUTPUT FILES --------------------------
+        # Link IOs and PLC logic into two separate shared libraries
         self.CTRInstance.logger.write(_("Linking :\n"))
-        if must_link:
-            if not self.link(objs, obns, Builder_LDFLAGS):
+        if must_link_ios or must_link_logic:
+            if not self.link(ios_objs, ios_obns, logic_objs, logic_obns,
+                             Builder_LDFLAGS, must_link_ios, must_link_logic):
                 return False
         else:
-            self.CTRInstance.logger.write("   [pass]  " + ' '.join(obns)+" -> " + self.bin + "\n")
+            self.CTRInstance.logger.write(
+                "   [pass]  " + ' '.join(ios_obns + logic_obns) +
+                " -> " + self.bin + ", " + self.logic_bin + "\n")
 
-        # Calculate md5 key and get data for the new created PLC
+        # Calculate md5 keys for both binaries
         self.md5key = self.compute_file_md5(self.bin_path)
+        self.logic_md5key = self.compute_file_md5(self.logic_bin_path)
 
-        # Store new PLC filename based on md5 key
-        f = open(self._GetMD5FileName(), "w")
-        f.write(self.md5key)
-        f.close()
+        # Store md5 keys
+        with open(self._GetMD5FileName(), "w") as f:
+            f.write(self.md5key)
+        with open(self._GetLogicMD5FileName(), "w") as f:
+            f.write(self.logic_md5key)
 
         return True
 
-    def link(self, objs, obns, LDFLAGS):
-        self.CTRInstance.logger.write("   [CC]  " + ' '.join(obns)+" -> " + self.bin + "\n")
+    def link(self, ios_objs, ios_obns, logic_objs, logic_obns,
+             LDFLAGS, must_link_ios=True, must_link_logic=True):
+        if must_link_ios:
+            self.CTRInstance.logger.write(
+                "   [CC]  " + ' '.join(ios_obns) + " -> " + self.bin + "\n")
+            status, _result, _err_result = ProcessLogger(
+                self.CTRInstance.logger,
+                [self.linker] + ios_objs
+                + ["-o", self.bin_path]
+                + LDFLAGS
+            ).spin()
+            if status:
+                self.CTRInstance.logger.write_error(_("Linking IOs failed with %d.\n") % status)
+                return False
 
-        status, _result, _err_result = ProcessLogger(
-            self.CTRInstance.logger,
-            [self.linker] + objs
-            + ["-o", self.bin_path]
-            + LDFLAGS
-        ).spin()
+        if must_link_logic:
+            self.CTRInstance.logger.write(
+                "   [CC]  " + ' '.join(logic_obns) + " -> " + self.logic_bin + "\n")
+            status, _result, _err_result = ProcessLogger(
+                self.CTRInstance.logger,
+                [self.linker] + logic_objs
+                + ["-o", self.logic_bin_path]
+                + LDFLAGS
+            ).spin()
+            if status:
+                self.CTRInstance.logger.write_error(_("Linking PLC logic failed with %d.\n") % status)
+                return False
 
-        if status:
-            self.CTRInstance.logger.write_error(_("Linking failed with %d.\n") % status)
-            return False
         return True

@@ -10,6 +10,10 @@
 #include <math.h>
 #include <stdarg.h>
 
+#ifndef ENODATA
+#define ENODATA 61
+#endif
+
 
 uint32_t AtomicCompareExchange(uint32_t* atomicvar, uint32_t compared, uint32_t exchange)
 {
@@ -214,6 +218,8 @@ int WaitDebugData(unsigned int *tick)
 {
 	DWORD res;
 	res = WaitForSingleObject(debug_wait_sem, INFINITE);
+    /* in case debug was disabled while waiting */
+    if(!__DEBUG) return ENODATA;
     *tick = __debug_tick;
     /* Wait signal from PLC thread */
 	return res != WAIT_OBJECT_0;
@@ -234,8 +240,13 @@ int suspendDebug(int disable)
     /* Prevent PLC to enter debug code */
     WaitForSingleObject(debug_sem, INFINITE);
     __DEBUG = !disable;
-    if(disable)
+    if(disable){
+        /* once debug disabled, PLC does no-op
+           and no call to resumeDebug is expected */
         ReleaseSemaphore(debug_sem, 1, NULL);
+        /* unblocks trace thread waiting for data */
+        ReleaseSemaphore(debug_wait_sem, 1, NULL);
+    }
     return 0;
 }
 

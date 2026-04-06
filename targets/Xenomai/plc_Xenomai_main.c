@@ -393,6 +393,8 @@ int WaitDebugData(unsigned int *tick)
     /* Wait signal from PLC thread */
     res = recv_RT_to_nRT_signal(WaitDebug_handle, &cmd);
     if (res == 1 && cmd == DEBUG_PENDING_DATA){
+        /* in case debug was disabled while waiting */
+        if(!__DEBUG) return ENODATA;
         *tick = __debug_tick;
         return 0;
     }
@@ -424,8 +426,12 @@ int suspendDebug(int disable)
        }
     }
     __DEBUG = !disable;
-    if (disable)
+    if (disable){
         AtomicCompareExchange( &debug_state, DEBUG_BUSY, DEBUG_FREE);
+        /* unblocks trace thread waiting for data */
+        char msg = DEBUG_PENDING_DATA;
+        send_RT_to_nRT_signal(WaitDebug_handle, msg);
+    }
     return 0;
 }
 

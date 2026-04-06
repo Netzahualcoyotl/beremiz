@@ -102,6 +102,7 @@ class PLCObject(object):
         self.PLCStatus = PlcStatus.Empty
         self.PLClibraryHandle = None
         self.PLClibraryLock = Lock()
+        self.CurrentLogicFilename = None
         # Creates fake C funcs proxies
         self._InitPLCStubCalls()
         self._loading_error = None
@@ -122,10 +123,13 @@ class PLCObject(object):
 
     # First task of worker -> no @RunInMain
     def AutoLoad(self, autostart):
-        # Get the last transfered PLC
+        # Get the last transfered PLC (both IOs and logic binaries)
         try:
             self.CurrentPLCFilename = open(
                 self._GetMD5FileName(),
+                "r").read().strip() + lib_ext
+            self.CurrentLogicFilename = open(
+                self._GetLogicMD5FileName(),
                 "r").read().strip() + lib_ext
             self.PLCStatus = PlcStatus.Stopped
             if autostart:
@@ -137,6 +141,7 @@ class PLCObject(object):
         except Exception:
             self.PLCStatus = PlcStatus.Empty
             self.CurrentPLCFilename = None
+            self.CurrentLogicFilename = None
 
         self.StatusChange()
 
@@ -191,23 +196,48 @@ class PLCObject(object):
     def _GetMD5FileName(self):
         return os.path.join(self.workingdir, "lasttransferedPLC.md5")
 
+    def _GetLogicMD5FileName(self):
+        return os.path.join(self.workingdir, "lasttransferedPLC_logic.md5")
+
     def _GetLibFileName(self):
         return os.path.join(self.workingdir, self.CurrentPLCFilename)
 
+    def _GetLogicLibFileName(self):
+        return os.path.join(self.workingdir, self.CurrentLogicFilename)
+
     def _LoadPLC(self):
         """
-        Load PLC library
-        Declare all functions, arguments and return values
+        Load IOs and PLC logic shared libraries.
+        Declare all functions, arguments and return values.
+
+        IOs .so  (PLClibraryHandle)   : startPLC, stopPLC, PythonIterator,
+                                        suspendDebug, resumeDebug, logging,
+                                        loadPLCLogic, preparePLCLogicSwap.
+        Logic .so (PLCLogicLibrary)   : RegisterDebugVariable, GetDebugData,
+                                        FreeDebugData, ResetDebugVariables,
+                                        ScanInstances, __init_PLCLogic,
+                                        __cleanup_PLCLogic.
         """
-        md5 = open(self._GetMD5FileName(), "r").read()
+        ios_md5 = open(self._GetMD5FileName(), "r").read()
+        logic_md5 = open(self._GetLogicMD5FileName(), "r").read()
+
         self.PLClibraryLock.acquire()
         try:
-            self._PLClibraryHandle = dlopen(self._GetLibFileName())
-            self.PLClibraryHandle = ctypes.CDLL(self.CurrentPLCFilename, handle=self._PLClibraryHandle)
+            # --- Load IOs .so with RTLD_GLOBAL so its symbols (located vars,
+            #     debug mutexes, logging, global var accessors) are visible when
+            #     logic .so resolves externs at load time.
+            if os.name == "posix":
+                self._PLClibraryHandle = dlopen(
+                    self._GetLibFileName(), ctypes.RTLD_GLOBAL)
+            else:
+                self._PLClibraryHandle = dlopen(self._GetLibFileName())
+
+            self.PLClibraryHandle = ctypes.CDLL(
+                self.CurrentPLCFilename, handle=self._PLClibraryHandle)
 
             self.PLC_ID = ctypes.c_char_p.in_dll(self.PLClibraryHandle, "PLC_ID")
-            if len(md5) == 32:
-                self.PLC_ID.value = md5.encode()
+            if len(ios_md5) == 32:
+                self.PLC_ID.value = ios_md5.encode()
 
             # let PLC code identify this runtime instance, extensions such as
             # MQTT need it to tell apart PLCs running the same binary
@@ -216,12 +246,49 @@ class PLCObject(object):
             if self.servicename is not None:
                 self.PLC_SERVICE_NAME.value = self.servicename.encode()
 
+            # --- Load logic .so (resolves externs from RTLD_GLOBAL IOs namespace)
+            self._PLCLogicLibraryHandle = dlopen(self._GetLogicLibFileName())
+            PLCLogicLibrary = ctypes.CDLL(
+                self.CurrentLogicFilename, handle=self._PLCLogicLibraryHandle)
+
+            PLC_ID_LOGIC = ctypes.c_char_p.in_dll(PLCLogicLibrary, "PLC_ID_LOGIC")
+            if len(logic_md5) == 32:
+                PLC_ID_LOGIC.value = logic_md5.encode()
+
+            # Connect logic to IOs: set plc_logic_run_fn / plc_logic_scan_fn
+            # and update common_ticktime__ / greatest_tick_count__.
+            _loadPLCLogic = self.PLClibraryHandle.loadPLCLogic
+            _loadPLCLogic.restype = ctypes.c_int
+            _loadPLCLogic.argtypes = [ctypes.c_void_p]
+            if _loadPLCLogic(self._PLCLogicLibraryHandle) != 0:
+                raise Exception("loadPLCLogic failed: symbols missing in logic .so")
+
+            # Initialize PLC logic instance tree (config_init__) and debug state.
+            # Called here (Python main thread) before the PLC thread is spawned.
+            # Use subscript to avoid Python name mangling of __ prefix
+            _initPLCLogic = PLCLogicLibrary["__init_PLCLogic"]
+            _initPLCLogic.restype = ctypes.c_int
+            _initPLCLogic.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+            ret = _initPLCLogic(0, None)
+            if ret != 0:
+                raise Exception("__init_PLCLogic failed with %d" % ret)
+
+            # Keep cleanup function for _FreePLC / hot-swap rebinding
+            self._cleanupPLCLogic_fn = PLCLogicLibrary["__cleanup_PLCLogic"]
+            self._cleanupPLCLogic_fn.restype = None
+
+            # --- Bind IOs .so interface functions ---
             self._startPLC = self.PLClibraryHandle.startPLC
             self._startPLC.restype = ctypes.c_int
             self._startPLC.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
 
             self._stopPLC_real = self.PLClibraryHandle.stopPLC
             self._stopPLC_real.restype = None
+
+            self._PythonSetPurge = getattr(self.PLClibraryHandle, "PythonSetPurge", None)
+            if self._PythonSetPurge is not None:
+                self._PythonSetPurge.restype = None
+                self._PythonSetPurge.argtypes = [ctypes.c_int]
 
             self._PythonIterator = getattr(self.PLClibraryHandle, "PythonIterator", None)
             if self._PythonIterator is not None:
@@ -231,7 +298,7 @@ class PLCObject(object):
                 self._stopPLC = self._stopPLC_real
             else:
                 # If python confnode is not enabled, we reuse _PythonIterator
-                # as a call that block pythonthread until StopPLC
+                # as a call that blocks pythonthread until StopPLC
                 self.PlcStopping = Event()
 
                 def PythonIterator(res, blkid, is_last):
@@ -244,20 +311,6 @@ class PLCObject(object):
                     self._stopPLC_real()
                     self.PlcStopping.set()
                 self._stopPLC = __StopPLC
-
-            self._ResetDebugVariables = self.PLClibraryHandle.ResetDebugVariables
-            self._ResetDebugVariables.restype = None
-
-            self._RegisterDebugVariable = self.PLClibraryHandle.RegisterDebugVariable
-            self._RegisterDebugVariable.restype = ctypes.c_int
-            self._RegisterDebugVariable.argtypes = [ctypes.c_int, ctypes.c_void_p]
-
-            self._FreeDebugData = self.PLClibraryHandle.FreeDebugData
-            self._FreeDebugData.restype = None
-
-            self._GetDebugData = self.PLClibraryHandle.GetDebugData
-            self._GetDebugData.restype = ctypes.c_int
-            self._GetDebugData.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_void_p)]
 
             self._suspendDebug = self.PLClibraryHandle.suspendDebug
             self._suspendDebug.restype = ctypes.c_int
@@ -282,7 +335,22 @@ class PLCObject(object):
             self._GetLogMessage.restype = ctypes.c_uint32
             self._GetLogMessage.argtypes = [ctypes.c_uint8, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32)]
 
-            self._ScanInstances = self.PLClibraryHandle.ScanInstances
+            # --- Bind logic .so debug/scan functions ---
+            self._ResetDebugVariables = PLCLogicLibrary.ResetDebugVariables
+            self._ResetDebugVariables.restype = None
+
+            self._RegisterDebugVariable = PLCLogicLibrary.RegisterDebugVariable
+            self._RegisterDebugVariable.restype = ctypes.c_int
+            self._RegisterDebugVariable.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t]
+
+            self._FreeDebugData = PLCLogicLibrary.FreeDebugData
+            self._FreeDebugData.restype = None
+
+            self._GetDebugData = PLCLogicLibrary.GetDebugData
+            self._GetDebugData.restype = ctypes.c_int
+            self._GetDebugData.argtypes = [ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_uint32), ctypes.POINTER(ctypes.c_void_p)]
+
+            self._ScanInstances = PLCLogicLibrary.ScanInstances
             self._ScanInstances.restype = None
             self._ScanInstances.argtypes = [SCAN_CB_FUNC, ctypes.c_void_p]
 
@@ -324,7 +392,7 @@ class PLCObject(object):
         self._startPLC = lambda x, y: None
         self._stopPLC = lambda: None
         self._ResetDebugVariables = lambda: None
-        self._RegisterDebugVariable = lambda x, y: 0
+        self._RegisterDebugVariable = lambda x, y, z: 0
         self._IterDebugData = lambda x, y: None
         self._FreeDebugData = lambda: None
         self._GetDebugData = lambda: -1
@@ -337,19 +405,39 @@ class PLCObject(object):
         self._GetLogMessage = None
         self._PLClibraryHandle = None
         self.PLClibraryHandle = None
+        self._PLCLogicLibraryHandle = None
+        self._PendingOldLogicHandle = None
+        self._cleanupPLCLogic_fn = None
+        self._swap_copy_ops = None  # keep ctypes array alive until next swap/unload
 
     def _FreePLC(self):
         """
-        Unload PLC library.
-        This is also called by __init__ to create dummy C func proxies
+        Unload IOs and logic PLC libraries.
+        Order: cleanup logic first (debug references IOs mutexes), then close
+        logic .so, then any pending old-logic handle, then IOs .so.
         """
         self.PLClibraryLock.acquire()
         try:
-            # Unload library explicitely
+            # Cleanup logic debug/retain state while both .so files are still mapped
+            cleanup = getattr(self, "_cleanupPLCLogic_fn", None)
+            if cleanup is not None:
+                try:
+                    cleanup()
+                except Exception:
+                    pass
+
+            if getattr(self, "_PLCLogicLibraryHandle", None) is not None:
+                dlclose(self._PLCLogicLibraryHandle)
+
+            # Close deferred old-logic handle from a previous hot-swap
+            if getattr(self, "_PendingOldLogicHandle", None) is not None:
+                dlclose(self._PendingOldLogicHandle)
+
+            # Unload IOs library last
             if getattr(self, "_PLClibraryHandle", None) is not None:
                 dlclose(self._PLClibraryHandle)
 
-            # Forget all refs to library
+            # Forget all refs to libraries
             self._InitPLCStubCalls()
 
         finally:
@@ -713,9 +801,17 @@ class PLCObject(object):
             if self.CurrentPLCFilename is not None \
             else None
 
+        old_logic_filename = os.path.join(self.workingdir, self.CurrentLogicFilename) \
+            if self.CurrentLogicFilename is not None \
+            else None
+
         try:
             allfiles = open(extra_files_log, "rt").readlines()
-            allfiles.extend([extra_files_log, old_PLC_filename, self._GetMD5FileName()])
+            allfiles.extend([extra_files_log,
+                             old_PLC_filename,
+                             old_logic_filename,
+                             self._GetMD5FileName(),
+                             self._GetLogicMD5FileName()])
         except Exception:
             self.LogMessage("No files to purge")
             allfiles = []
@@ -734,51 +830,85 @@ class PLCObject(object):
 
     @RunInMain
     def NewPLC(self, md5sum, plc_object, extrafiles):
-        if self.PLCStatus in [PlcStatus.Stopped, PlcStatus.Empty, PlcStatus.Broken]:
-            NewFileName = md5sum + lib_ext
-            extra_files_log = self._extra_files_log_path()
+        # Close any deferred old-logic handle from a previous hot-swap.
+        # Safe now: the PLC thread has already switched to the new logic.
+        if self._PendingOldLogicHandle is not None:
+            dlclose(self._PendingOldLogicHandle)
+            self._PendingOldLogicHandle = None
 
-            new_PLC_filename = os.path.join(self.workingdir, NewFileName)
+        # extrafiles[0] is always the logic binary: (logic_md5 + lib_ext, blobID)
+        if not extrafiles:
+            self.LogMessage(0, "NewPLC: missing logic binary in extrafiles")
+            return False
 
-            self.UnLoadPLC()
+        logic_entry, other_extrafiles = extrafiles[0], extrafiles[1:]
+        logic_fname, logic_blob_id = logic_entry
+        logic_md5 = os.path.splitext(logic_fname)[0]  # strip extension
 
-            self.PurgePLC()
+        # Hot-swap path: PLC running, IOs unchanged, only logic changed.
+        if (self.PLCStatus == PlcStatus.Started
+                and self.MatchMD5(md5sum)
+                and not self._MatchLogicMD5(logic_md5)):
+            return self._HotSwapPLCLogic(logic_md5, logic_blob_id)
 
-            self.LogMessage("NewPLC (%s)" % md5sum)
+        # Full reload path: PLC must be stopped/empty/broken.
+        if self.PLCStatus not in [PlcStatus.Stopped, PlcStatus.Empty, PlcStatus.Broken]:
+            return False
 
-            try:
-                # Create new PLC file
-                self.BlobAsFile(plc_object, new_PLC_filename)
+        NewFileName = md5sum + lib_ext
+        NewLogicFileName = logic_fname
+        extra_files_log = self._extra_files_log_path()
 
-                # Then write the files
-                log = open(extra_files_log, "w")
-                for fname, blobID in extrafiles:
-                    fpath = os.path.join(self.workingdir, fname)
-                    self.BlobAsFile(blobID, fpath)
-                    log.write(fname+'\n')
+        new_PLC_filename = os.path.join(self.workingdir, NewFileName)
+        new_logic_filename = os.path.join(self.workingdir, NewLogicFileName)
 
-                # Store new PLC filename based on md5 key
-                with open(self._GetMD5FileName(), "w") as f:
-                    f.write(md5sum)
-                    f.flush()
-                    os.fsync(f.fileno())
+        self.UnLoadPLC()
+        self.PurgePLC()
 
-                # Store new PLC filename
-                self.CurrentPLCFilename = NewFileName
-            except Exception:
-                self.PLCStatus = PlcStatus.Broken
-                self.StatusChange()
-                PLCprint(traceback.format_exc())
-                return False
+        self.LogMessage("NewPLC (%s / logic %s)" % (md5sum, logic_md5))
 
-            if self.LoadPLC():
-                self.PLCStatus = PlcStatus.Stopped
-                self.StatusChange()
-            else:
-                self._fail(_("Problem installing new PLC : can't load PLC"))
+        try:
+            # Write IOs binary
+            self.BlobAsFile(plc_object, new_PLC_filename)
 
-            return self.PLCStatus == PlcStatus.Stopped
-        return False
+            # Write logic binary
+            self.BlobAsFile(logic_blob_id, new_logic_filename)
+
+            # Write other extra files (RUNTIME_*.py, etc.)
+            # Logic binary is tracked separately via CurrentLogicFilename / _GetLogicMD5FileName()
+            log = open(extra_files_log, "w")
+            for fname, blobID in other_extrafiles:
+                fpath = os.path.join(self.workingdir, fname)
+                self.BlobAsFile(blobID, fpath)
+                log.write(fname + '\n')
+
+            # Persist IOs MD5
+            with open(self._GetMD5FileName(), "w") as f:
+                f.write(md5sum)
+                f.flush()
+                os.fsync(f.fileno())
+
+            # Persist logic MD5
+            with open(self._GetLogicMD5FileName(), "w") as f:
+                f.write(logic_md5)
+                f.flush()
+                os.fsync(f.fileno())
+
+            self.CurrentPLCFilename = NewFileName
+            self.CurrentLogicFilename = NewLogicFileName
+        except Exception:
+            self.PLCStatus = PlcStatus.Broken
+            self.StatusChange()
+            PLCprint(traceback.format_exc())
+            return False
+
+        if self.LoadPLC():
+            self.PLCStatus = PlcStatus.Stopped
+            self.StatusChange()
+        else:
+            self._fail(_("Problem installing new PLC : can't load PLC"))
+
+        return self.PLCStatus == PlcStatus.Stopped
 
     def MatchMD5(self, MD5):
         try:
@@ -787,6 +917,144 @@ class PLCObject(object):
         except Exception:
             pass
         return False
+
+    def _MatchLogicMD5(self, MD5):
+        try:
+            last_md5 = open(self._GetLogicMD5FileName(), "r").read()
+            return last_md5 == MD5
+        except Exception:
+            pass
+        return False
+
+    def _HotSwapPLCLogic(self, new_logic_md5, logic_blob_id):
+        """
+        Hot-swap the PLC logic .so without stopping the PLC thread.
+
+        1. Write new logic .so to disk.
+        2. Load it; call __init_PLCLogic (config_init__ + __init_debug).
+        3. Reconcile old and new instance trees (streaming two-pointer merge).
+        4. Build a ctypes copy_op_t[] array from matched leaf nodes.
+        5. Hand off to PLC thread via preparePLCLogicSwap (fire-and-forget).
+        6. Rebind debug/scan symbols from new logic library.
+        7. Store old handle for deferred dlclose on next NewPLC call.
+        """
+        from runtime.plc_hotswap import (scan_lib_instances,
+                                         reconcile_instance_trees,
+                                         build_copy_ops_array)
+
+        new_logic_fname = new_logic_md5 + lib_ext
+        new_logic_path = os.path.join(self.workingdir, new_logic_fname)
+
+        try:
+            # Write new logic binary to disk
+            self.BlobAsFile(logic_blob_id, new_logic_path)
+
+            # Load new logic .so
+            new_handle = dlopen(new_logic_path)
+            new_lib = ctypes.CDLL(new_logic_path, handle=new_handle)
+
+            # Initialize new PLC instance tree and debug state
+            # Use subscript to avoid Python name mangling of __ prefix
+            _init_fn = new_lib["__init_PLCLogic"]
+            _init_fn.restype = ctypes.c_int
+            _init_fn.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
+            ret = _init_fn(0, None)
+            if ret != 0:
+                dlclose(new_handle)
+                self.LogMessage(0, "Hot-swap: __init_PLCLogic failed (%d)" % ret)
+                return False
+
+            # Type new scan function for use in scan_lib_instances generator
+            new_scan_fn = new_lib.ScanInstances
+            new_scan_fn.restype = None
+            new_scan_fn.argtypes = [SCAN_CB_FUNC, ctypes.c_void_p]
+
+            self._suspendDebug(True)
+            self.DebugToken = 0
+            
+            if self._PythonSetPurge is not None:
+                self._PythonSetPurge(1)
+
+            # Build copy-ops by streaming old and new instance trees in parallel.
+            # old_gen uses current self._ScanInstances (old logic, still live).
+            # new_gen uses new logic's ScanInstances directly.
+            c_ops, ops_count = build_copy_ops_array(
+                reconcile_instance_trees(
+                    self.PLCScan(),
+                    scan_lib_instances(new_scan_fn)))
+
+            ops_addr = ctypes.cast(c_ops, ctypes.c_void_p).value if ops_count else None
+
+            if self._PythonSetPurge is not None:
+                idle_event = Event()
+                self.python_runtime_vars["OnIdle"].append(idle_event.set)
+                idle_event.wait(timeout=0.5)
+
+            # Fire-and-forget: hand off to PLC thread.
+            # The C side resolves plc_logic_cycle / ScanInstances / GetRetainSize
+            # from new_handle itself — no pre-resolved pointers needed here.
+            # The PLC thread will execute copy ops and switch fn pointers on its
+            # next cycle boundary (best-effort, no pause).
+            _prepareSwap = self.PLClibraryHandle.preparePLCLogicSwap
+            _prepareSwap.restype = ctypes.c_int
+            _prepareSwap.argtypes = [
+                ctypes.c_void_p,  # handle (dlopen result)
+                ctypes.c_void_p,  # copy_op_t *ops
+                ctypes.c_size_t,  # count
+            ]
+            _prepareSwap(new_handle, ops_addr, ops_count)
+
+            # Keep ctypes array alive until next swap/unload (PLC thread still references it)
+            self._swap_copy_ops = c_ops
+
+            # Rebind debug/scan symbols to new logic library.
+            # The trace thread may call old GetDebugData one more time (acceptable —
+            # old .so stays mapped until _PendingOldLogicHandle is closed); new
+            # registrations will use the rebound functions below.
+            self.PLClibraryLock.acquire()
+            try:
+                self._ResetDebugVariables = new_lib.ResetDebugVariables
+                self._ResetDebugVariables.restype = None
+
+                self._RegisterDebugVariable = new_lib.RegisterDebugVariable
+                self._RegisterDebugVariable.restype = ctypes.c_int
+                self._RegisterDebugVariable.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_size_t]
+
+                self._FreeDebugData = new_lib.FreeDebugData
+                self._FreeDebugData.restype = None
+
+                self._GetDebugData = new_lib.GetDebugData
+                self._GetDebugData.restype = ctypes.c_int
+                self._GetDebugData.argtypes = [ctypes.POINTER(ctypes.c_uint32),
+                                               ctypes.POINTER(ctypes.c_uint32),
+                                               ctypes.POINTER(ctypes.c_void_p)]
+
+                self._ScanInstances = new_scan_fn
+
+                self._cleanupPLCLogic_fn = new_lib["__cleanup_PLCLogic"]
+                self._cleanupPLCLogic_fn.restype = None
+            finally:
+                self.PLClibraryLock.release()
+
+            # Store old handle for deferred dlclose — closed at the start of
+            # the NEXT NewPLC call, by which time the PLC thread has already
+            # switched to the new logic.
+            self._PendingOldLogicHandle = self._PLCLogicLibraryHandle
+            self._PLCLogicLibraryHandle = new_handle
+            self.CurrentLogicFilename = new_logic_fname
+
+            # Persist new logic MD5
+            with open(self._GetLogicMD5FileName(), "w") as f:
+                f.write(new_logic_md5)
+                f.flush()
+                os.fsync(f.fileno())
+
+            self.LogMessage("Hot-swap: logic updated to %s" % new_logic_md5)
+            return True
+
+        except Exception:
+            self.LogMessage(0, "Hot-swap failed:\n" + traceback.format_exc())
+            return False
 
     @RunInMain
     def SetTraceVariablesList(self, idxs):

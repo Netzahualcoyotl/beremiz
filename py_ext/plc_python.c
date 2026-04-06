@@ -31,6 +31,7 @@ static int PythonState;
 #define PYTHON_LOCKED_BY_PLC 1
 #define PYTHON_MUSTWAKEUP 2
 #define PYTHON_FINISHED 4
+#define PYTHON_PURGE 8
 
 /* Each python_eval FunctionBlock have it own state */
 #define PYTHON_FB_FREE 0
@@ -64,6 +65,8 @@ void __cleanup_py_ext()
 
 void __retrieve_py_ext()
 {
+	if(PythonState & PYTHON_PURGE)
+		return;
 	/* Check Python thread is not being
 	 * modifying internal python_eval data */
 	PythonState = TryLockPython() ?
@@ -108,8 +111,8 @@ void __PythonEvalFB(int poll, PYTHON_EVAL_data__* data__)
 	/* retain value for next rising edge detection */
 	__SET_VAR(data__->, TRIGM1,, __GET_VAR(data__->TRIG));
 
-	/* python thread is not in ? */
-	if( PythonState & PYTHON_LOCKED_BY_PLC){
+	 /* enqueue if not purging and if python is already in */
+	if(!(PythonState & PYTHON_PURGE) && PythonState & PYTHON_LOCKED_BY_PLC) {
 		/* if some answer are waiting, publish*/
 		if(__GET_VAR(data__->STATE) == PYTHON_FB_ANSWERED){
 			/* Copy buffer content into result*/
@@ -222,3 +225,10 @@ char* PythonIterator(char* result, void** id, int* is_last)
 	return next_command;
 }
 
+void PythonSetPurge(int value){
+	if(value){
+		PythonState |= PYTHON_PURGE;
+	}else{
+		PythonState &= ~PYTHON_PURGE;
+	}
+}

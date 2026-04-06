@@ -11,6 +11,7 @@
 // File name of the last transferred PLC md5 hex digest
 // with typo in the name, for compatibility with Python runtime
 #define LastTransferredPLC "lasttransferedPLC.md5"
+#define LastTransferredLogicPLC "lasttransferedPLC_logic.md5"
 
 // File name of the extra files list
 #define ExtraFilesList "extra_files.txt"
@@ -35,6 +36,7 @@
 PLCObjectPosix::PLCObjectPosix(void) : PLCObject()
 {
     m_handle = NULL;
+    m_logic_handle = NULL;
     FOR_EACH_PLC_SYMBOLS_DO(ULSYM);
 }
 
@@ -85,15 +87,32 @@ uint32_t PLCObjectPosix::SaveBlobs(
     // create "lasttransferedPLC.md5" file and Save md5sum in it
     std::ofstream(std::string(LastTransferredPLC), std::ios::binary) << md5sum;
 
-    // create "extra_files.txt" file
+    // extrafiles[0] is the logic .so: save it and record its MD5
+    if (extrafiles->elementsCount > 0)
+    {
+        extra_file *logicfile = extrafiles->elements;
+
+        // Logic .so filename is "{logic_md5}.so"; strip extension to get the MD5
+        std::string logic_fname(logicfile->fname);
+        std::string logic_md5 = logic_fname.substr(0, logic_fname.rfind('.'));
+
+        res = BlobAsFile(&logicfile->blobID, logic_fname);
+        if (res != 0)
+        {
+            return res;
+        }
+
+        std::ofstream(std::string(LastTransferredLogicPLC), std::ios::binary) << logic_md5;
+    }
+
+    // create "extra_files.txt" for any remaining extra files (indices 1+)
     std::ofstream extra_files_log(std::string(ExtraFilesList), std::ios::binary);
 
-    // Create extra files
-    for (int i = 0; i < extrafiles->elementsCount; i++)
+    for (int i = 1; i < extrafiles->elementsCount; i++)
     {
         extra_file *extrafile = extrafiles->elements + i;
 
-        res = BlobAsFile(plcObjectBlobID, extrafile->fname);
+        res = BlobAsFile(&extrafile->blobID, extrafile->fname);
         if (res != 0)
         {
             return res;
@@ -118,22 +137,27 @@ uint32_t PLCObjectPosix::PurgePLC(void)
         std::filesystem::remove(extra_file);
     }
 
-    // Load the last transferred PLC md5 hex digest
-    std::string md5sum;
+    // Remove IOs .so
     try {
+        std::string md5sum;
         std::ifstream(std::string(LastTransferredPLC), std::ios::binary) >> md5sum;
-
-        // Remove the PLC object shared object file
         std::filesystem::remove(md5sum + SHARED_OBJECT_EXT);
     } catch (std::exception e) {
         // ignored
     }
 
+    // Remove logic .so
     try {
-        // Remove the last transferred PLC md5 hex digest
-        std::filesystem::remove(std::string(LastTransferredPLC));
+        std::string logic_md5sum;
+        std::ifstream(std::string(LastTransferredLogicPLC), std::ios::binary) >> logic_md5sum;
+        std::filesystem::remove(logic_md5sum + SHARED_OBJECT_EXT);
+    } catch (std::exception e) {
+        // ignored
+    }
 
-        // Remove the extra files list
+    try {
+        std::filesystem::remove(std::string(LastTransferredPLC));
+        std::filesystem::remove(std::string(LastTransferredLogicPLC));
         std::filesystem::remove(std::string(ExtraFilesList));
     } catch (std::exception e) {
         // ignored
@@ -142,23 +166,33 @@ uint32_t PLCObjectPosix::PurgePLC(void)
     return 0;
 }
 
-#define DLSYM(sym)                                                           \
-    do                                                                       \
-    {                                                                        \
-        m_PLCSyms.sym = (decltype(m_PLCSyms.sym))dlsym(m_handle, #sym);      \
-        if (m_PLCSyms.sym == NULL)                                           \
-        {                                                                    \
-            /* TODO: use log instead */                                      \
-            std::cout << "Error dlsym " #sym ": " << dlerror() << std::endl; \
-            return errno;                                                    \
-        }                                                                    \
+#define DLSYM_IOS(sym)                                                            \
+    do                                                                            \
+    {                                                                             \
+        m_PLCSyms.sym = (decltype(m_PLCSyms.sym))dlsym(m_handle, #sym);           \
+        if (m_PLCSyms.sym == NULL)                                                \
+        {                                                                         \
+            std::cout << "Error dlsym IOs " #sym ": " << dlerror() << std::endl; \
+            return errno;                                                         \
+        }                                                                         \
+    } while (0);
+
+#define DLSYM_LOGIC(sym)                                                            \
+    do                                                                              \
+    {                                                                               \
+        m_PLCSyms.sym = (decltype(m_PLCSyms.sym))dlsym(m_logic_handle, #sym);       \
+        if (m_PLCSyms.sym == NULL)                                                  \
+        {                                                                           \
+            std::cout << "Error dlsym logic " #sym ": " << dlerror() << std::endl; \
+            return errno;                                                           \
+        }                                                                           \
     } while (0);
 
 uint32_t PLCObjectPosix::LoadPLC(void)
 {
     // TODO use PLCLibMutex
 
-    // Load the last transferred PLC md5 hex digest
+    // Load IOs md5
     std::string md5sum;
     try {
         std::ifstream(std::string(LastTransferredPLC), std::ios::binary) >> md5sum;
@@ -166,21 +200,28 @@ uint32_t PLCObjectPosix::LoadPLC(void)
         return ENOENT;
     }
 
-    // Concatenate md5sum and shared object extension to obtain filename
-    std::filesystem::path filename(md5sum + SHARED_OBJECT_EXT);
+    // Load logic md5
+    std::string logic_md5sum;
+    try {
+        std::ifstream(std::string(LastTransferredLogicPLC), std::ios::binary) >> logic_md5sum;
+    } catch (std::exception e) {
+        return ENOENT;
+    }
 
-    // Load the shared object file
-    m_handle = dlopen(std::filesystem::absolute(filename).c_str(), RTLD_NOW);
+    // Load IOs .so with RTLD_GLOBAL so its symbols (located vars, logging,
+    // global var accessors) are visible when the logic .so resolves externs.
+    std::filesystem::path ios_filename(md5sum + SHARED_OBJECT_EXT);
+    m_handle = dlopen(std::filesystem::absolute(ios_filename).c_str(), RTLD_NOW | RTLD_GLOBAL);
     if (m_handle == NULL)
     {
-        std::cout << "Error: " << dlerror() << std::endl;
+        std::cout << "Error loading IOs .so: " << dlerror() << std::endl;
         return errno;
     }
 
-    // Resolve shared object symbols
-    FOR_EACH_PLC_SYMBOLS_DO(DLSYM);
+    // Resolve IOs symbols
+    FOR_EACH_IOS_SYMBOLS_DO(DLSYM_IOS);
 
-    // Set content of PLC_ID to md5sum
+    // Set content of PLC_ID to IOs md5sum
     m_PLCSyms.PLC_ID = (uint8_t *)malloc(md5sum.size() + 1);
     if (m_PLCSyms.PLC_ID == NULL)
     {
@@ -189,13 +230,63 @@ uint32_t PLCObjectPosix::LoadPLC(void)
     memcpy(m_PLCSyms.PLC_ID, md5sum.c_str(), md5sum.size());
     m_PLCSyms.PLC_ID[md5sum.size()] = '\0';
 
+    // Load logic .so (externs resolved from IOs RTLD_GLOBAL namespace)
+    std::filesystem::path logic_filename(logic_md5sum + SHARED_OBJECT_EXT);
+    m_logic_handle = dlopen(std::filesystem::absolute(logic_filename).c_str(), RTLD_NOW);
+    if (m_logic_handle == NULL)
+    {
+        std::cout << "Error loading logic .so: " << dlerror() << std::endl;
+        dlclose(m_handle);
+        m_handle = NULL;
+        return errno;
+    }
+
+    // Resolve logic symbols
+    FOR_EACH_LOGIC_SYMBOLS_DO(DLSYM_LOGIC);
+
+    // Connect logic to IOs: set plc_logic_run_fn / plc_logic_scan_fn
+    // and call config_init__() to initialise the IEC instance tree.
+    typedef int (*loadPLCLogic_t)(void *);
+    loadPLCLogic_t loadPLCLogic_fn = (loadPLCLogic_t)dlsym(m_handle, "loadPLCLogic");
+    if (loadPLCLogic_fn == NULL)
+    {
+        std::cout << "Error dlsym loadPLCLogic: " << dlerror() << std::endl;
+        return errno;
+    }
+    if (loadPLCLogic_fn(m_logic_handle) != 0)
+    {
+        std::cout << "Error: loadPLCLogic failed" << std::endl;
+        return EINVAL;
+    }
+
+    // Call __init_PLCLogic to run config_init__() and initialise the IEC instance tree.
+    // Without this, all FB EN flags stay zero (BSS) and FB bodies return immediately.
+    typedef int (*init_plc_logic_t)(int, char **);
+    init_plc_logic_t init_plc_logic_fn =
+        (init_plc_logic_t)dlsym(m_logic_handle, "__init_PLCLogic");
+    if (init_plc_logic_fn == NULL)
+    {
+        std::cout << "Error dlsym __init_PLCLogic: " << dlerror() << std::endl;
+        return errno;
+    }
+    int ilpl_res = init_plc_logic_fn(m_argc, m_argv);
+    if (ilpl_res != 0)
+    {
+        std::cout << "Error: __init_PLCLogic failed: " << ilpl_res << std::endl;
+        return EINVAL;
+    }
+
     return 0;
 }
 
 uint32_t PLCObjectPosix::UnLoadPLC(void)
 {
-    // Unload the shared object file
     FOR_EACH_PLC_SYMBOLS_DO(ULSYM);
+    if(m_logic_handle != NULL)
+    {
+        dlclose(m_logic_handle);
+        m_logic_handle = NULL;
+    }
     if(m_handle != NULL)
     {
         dlclose(m_handle);

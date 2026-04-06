@@ -20,18 +20,32 @@ class Builder:
         self.buildpath = None
         self.SetBuildPath(self.CTRInstance._getBuildPath())
         self.md5key = None
+        self.logic_md5key = None
 
     bin_path = None
+    logic_bin_path = None
+
     def GetBinaryPath(self):
         return self.bin_path
+
+    def GetLogicBinaryPath(self):
+        return self.logic_bin_path
 
     def _GetMD5FileName(self):
         return join(self.buildpath, "lastbuildPLC.md5")
 
+    def _GetLogicMD5FileName(self):
+        return join(self.buildpath, "lastbuildLogic.md5")
+
     def ResetBinaryMD5(self):
         self.md5key = None
+        self.logic_md5key = None
         try:
             os.remove(self._GetMD5FileName())
+        except Exception:
+            pass
+        try:
+            os.remove(self._GetLogicMD5FileName())
         except Exception:
             pass
 
@@ -44,12 +58,24 @@ class Builder:
             except Exception:
                 return None
 
+    def GetLogicBinaryMD5(self):
+        if self.logic_md5key is not None:
+            return self.logic_md5key
+        else:
+            try:
+                return open(self._GetLogicMD5FileName(), "r").read()
+            except Exception:
+                return None
+
     def SetBuildPath(self, buildpath):
         if self.buildpath != buildpath:
             self.buildpath = buildpath
             self.bin = self.CTRInstance.GetProjectName() + self.extension
             self.bin_path = join(self.buildpath, self.bin)
+            self.logic_bin = self.CTRInstance.GetProjectName() + "_logic" + self.extension
+            self.logic_bin_path = join(self.buildpath, self.logic_bin)
             self.md5key = None
+            self.logic_md5key = None
             return True
         return False
 

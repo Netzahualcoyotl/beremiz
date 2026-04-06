@@ -61,7 +61,7 @@ CXXFLAGS += -std=gnu++17 -Wunused-variable -Wno-deprecated-register -Wno-narrowi
 # CFLAGS += -Os -DNDEBUG
 CXXFLAGS += -g3 -O0 -DDEBUG
 
-LIBRARIES += -lpthread -lrt -lc -lm
+LIBRARIES += -lpthread -lrt -lc -lm -ldl
 LD = $(CXX)
 
 OBJS_ROOT = $(RUNTIME_ROOT)/build

@@ -16,8 +16,11 @@ class PLCObjectPosix : public PLCObject
         virtual ~PLCObjectPosix(void);
 
     protected:
-        // PLC object library handle
+        // IOs shared object library handle (loaded with RTLD_GLOBAL)
         void * m_handle;
+
+        // Logic shared object library handle
+        void * m_logic_handle;
 
         // Shared object mutex
         std::mutex m_PLClibMutex;
