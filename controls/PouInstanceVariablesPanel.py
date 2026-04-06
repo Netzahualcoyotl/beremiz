@@ -446,6 +446,18 @@ class VariablesTreeModel(object):
                 if dt_type in ("Directly", "Enumerated", "Subrange"):
                     self._children_cache[infos.type] = []
                     return False
+                return True
+            # GetDataTypeInfos doesn't search confnode/library types.
+            # Check if it's a POU (function block / program) which has children.
+            try:
+                pou = self._controller.GetPou(infos.type, self._debug)
+            except Exception:
+                pou = None
+            if pou is not None:
+                return True
+            # Not a known data type or POU — assume leaf
+            self._children_cache[infos.type] = []
+            return False
         return True
 
     def is_nav_item(self, indices):
