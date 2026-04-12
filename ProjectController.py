@@ -1381,11 +1381,14 @@ class ProjectController(ConfigTreeNode, PLCControler):
         # Generate main, based on template
         plc_main_code = targets.GetCode("plc_main_head.c") % plc_main_fields
 
-        # Generate_plc_main is only used for PLC-SDK now
         sdk_path = GetSDKPath()
-        sdk_main_code_path = os.path.join(sdk_path, "plc_main_sdk.c")
-        plc_main_code += open(sdk_main_code_path, "r").read()
-
+        if not sdk_path:
+            # Append target-specific code if not using SDK
+            plc_main_code += targets.GetTargetCode(self.GetBuilder().GetTargetName())
+        else:
+            sdk_main_code_path = os.path.join(sdk_path, "plc_main_sdk.c")
+            plc_main_code += open(sdk_main_code_path, "r").read()
+        
         return plc_main_code
 
     def Generate_global_vars(self):
@@ -1591,9 +1594,11 @@ class ProjectController(ConfigTreeNode, PLCControler):
         logging_enabled = self.GetBuilder().getLoggingEnabled()
         if not logging_enabled:
             self.additionalCFLAGS.append("-DPLC_NO_LOGGING")
-        if self.GetBuilder().getABIEnabled():
+
+        use_abi = self.GetBuilder().getABIEnabled()
+        if use_abi:
             # ABI shim goes into IOs .so (provides runtime services to logic)
-            c_source.append((partial(targets.GetCode,"plc_ABI.c"), "plc_ABI.c", "ABI", True))
+            c_source.append((partial(targets.GetCode,"plc_ABI.c"), "plc_ABI.c", "ABI", False))
             self.additionalCFLAGS.append("-DPLC_USES_ABI")
         elif logging_enabled:
             # logging goes into IOs .so (extensions call LogMessage; logic resolves via RTLD_GLOBAL)
@@ -1601,9 +1606,13 @@ class ProjectController(ConfigTreeNode, PLCControler):
 
         sdk_path = GetSDKPath()
         if sdk_path:
-            self.additionalCFLAGS.append('"-I%s"' % sdk_path)
-            # SDK build: single binary — use the legacy plc_main_head.c template
+            # SDK build: single binary
             # which appends plc_main_sdk.c from the SDK directory.
+            self.additionalCFLAGS.append('"-I%s"' % sdk_path)
+
+        no_split = sdk_path or use_abi
+        if no_split:
+            # use the legacy plc_main_head.c template
             c_source.append((self.Generate_plc_main, "plc_main.c", "PLC main", False))
         else:
             # Split-binary build: IOs .so + logic .so with hot-swap support.
@@ -2336,39 +2345,46 @@ class ProjectController(ConfigTreeNode, PLCControler):
             self.logger.write_error(_("Fatal : cannot get builder.\n"))
             return False
 
+        use_abi = self.GetBuilder().getABIEnabled()
+        sdk_path = GetSDKPath()
+        split = not(sdk_path or use_abi)
+
         # Recover MD5s from last build
         IOs_MD5 = builder.GetBinaryMD5()
-        logic_MD5 = builder.GetLogicBinaryMD5()
+        logic_MD5 = builder.GetLogicBinaryMD5() if split else None
 
         # Check if MD5 files are present — ask user to build if not
-        if IOs_MD5 is None or logic_MD5 is None:
+        if IOs_MD5 is None or (split and (logic_MD5 is None)):
             self.logger.write_error(
                 _("Failed : Must build before transfer.\n"))
             return False
 
+        # Compare PLC project with PLC on target
+        same_md5 = self._connector.MatchMD5(IOs_MD5)
+        
         if self.IsPLCStarted():
-            if not self._connector.MatchMD5(IOs_MD5):
+            if not same_md5:
                 # If IOs binary changed and PLC is running, we cannot hot-swap: must stop first
                 dialog = wx.MessageDialog(
                     self.AppFrame,
-                    _("IO code changed. Cannot transfer while PLC is running. Stop it now?"),
+                    _("IO code changed. PLC hot-swap is impossible. Stop PLC and transfer?") if split else
+                    _("Cannot transfer while PLC is running. Stop it now?"),
                     style=wx.YES_NO | wx.CENTRE)
                 if dialog.ShowModal() == wx.ID_YES:
                     self._Stop()
                 else:
                     return
             else:
+                self.logger.write(_("Same IOs, PLC logic hot-swap\n"))
                 self.KillDebugThread()
+        else:
+            if same_md5 and not(split):
+                self.logger.write(_("Latest build already matches current target. Transfering anyway...\n"))
         
         # Check if transfer is done by builder
         if self._connector.DelegateTransferToBuilder():
             self.logger.write(_("Transfer is ensured by build system.\n"))
             return builder.Transfer(self._connector)
-
-        # Compare PLC project with PLC on target
-        if self._connector.MatchMD5(IOs_MD5):
-            self.logger.write(
-                _("Latest build already matches current target. Transfering anyway...\n"))
 
         # purge any non-finished transfer
         # note: this would abort any running transfer with error
@@ -2394,10 +2410,11 @@ class ProjectController(ConfigTreeNode, PLCControler):
             ios_path = builder.GetBinaryPath()
             ios_blob = self._connector.BlobFromFile(ios_path, IOs_MD5)
 
-            # Send logic binary as extrafiles[0]
-            logic_path = builder.GetLogicBinaryPath()
-            logic_blob = self._connector.BlobFromFile(logic_path, logic_MD5)
-            extrafiles.insert(0, (logic_MD5 + lib_ext, logic_blob))
+            if split:
+                # Send logic binary as extrafiles[0]
+                logic_path = builder.GetLogicBinaryPath()
+                logic_blob = self._connector.BlobFromFile(logic_path, logic_MD5)
+                extrafiles.insert(0, (logic_MD5 + lib_ext, logic_blob))
 
         except IOError as e:
             self.logger.write_error(repr(e))

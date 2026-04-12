@@ -135,19 +135,21 @@ class toolchain_gcc(Builder):
             Builder_LDFLAGS = replace_sysroot(Builder_LDFLAGS)
 
         # ----------------- GENERATE OBJECT FILES ------------------------
+        split = not(self.getABIEnabled())
+        
         ios_obns = []
         ios_objs = []
         logic_obns = []
         logic_objs = []
         must_link_ios = not os.path.exists(self.bin_path)
-        must_link_logic = not os.path.exists(self.logic_bin_path)
+        must_link_logic = not os.path.exists(self.logic_bin_path) if split else False
         for Location, CFilesAndCFLAGS, _DoCalls, *_req in self.CTRInstance.LocationCFilesAndCFLAGS:
             if CFilesAndCFLAGS:
                 if Location:
                     self.CTRInstance.logger.write(".".join(map(str, Location))+" :\n")
                 else:
                     self.CTRInstance.logger.write(_("PLC :\n"))
-
+            for_ios = Location or not(split)
             for CFile, CFLAGS in CFilesAndCFLAGS:
                 if CFile.endswith(".c"):
                     bn = os.path.basename(CFile)
@@ -159,7 +161,7 @@ class toolchain_gcc(Builder):
                     if match and os.path.exists(objectfilename):
                         self.CTRInstance.logger.write("   [pass]  "+bn+" -> "+obn+"\n")
                     else:
-                        if Location:
+                        if for_ios:
                             must_link_ios = True
                         else:
                             must_link_logic = True
@@ -180,14 +182,14 @@ class toolchain_gcc(Builder):
                             self.srcmd5.pop(bn)
                             self.CTRInstance.logger.write_error(_("C compilation of %s failed.\n") % bn)
                             return False
-                    if Location:
+                    if for_ios:
                         ios_obns.append(obn)
                         ios_objs.append(objectfilename)
                     else:
                         logic_obns.append(obn)
                         logic_objs.append(objectfilename)
                 elif CFile.endswith(".o"):
-                    if Location:
+                    if for_ios:
                         ios_obns.append(os.path.basename(CFile))
                         ios_objs.append(CFile)
                     else:
@@ -208,13 +210,15 @@ class toolchain_gcc(Builder):
 
         # Calculate md5 keys for both binaries
         self.md5key = self.compute_file_md5(self.bin_path)
-        self.logic_md5key = self.compute_file_md5(self.logic_bin_path)
+        self.logic_md5key = self.compute_file_md5(self.logic_bin_path) if split else None
 
         # Store md5 keys
         with open(self._GetMD5FileName(), "w") as f:
             f.write(self.md5key)
-        with open(self._GetLogicMD5FileName(), "w") as f:
-            f.write(self.logic_md5key)
+        
+        if split: 
+            with open(self._GetLogicMD5FileName(), "w") as f:
+                f.write(self.logic_md5key)
 
         return True
 
