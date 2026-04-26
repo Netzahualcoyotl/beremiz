@@ -48,10 +48,12 @@ def _make_flat(members, POUS):
                     rest = rest[i + 1:]
                     break
         if entry is None: raise KeyError(repr(name))
-        off, strides, base_type = entry
+        off, strides, base_type, elem_type = entry
         cumulated += off
         if strides:
             cumulated += sum((indices[d] if len(indices) > d else 0) * s for d, s in enumerate(strides))
+            if indices and elem_type is not None:
+                base_type = elem_type
         sub = POUS.get(base_type)
         if sub and rest:
             return sub(rest, cumulated)
@@ -126,7 +128,8 @@ def _build_pous(pous_list, type_info):
                 base_type = var_type_upper
 
             strides = _dims_to_strides(flat_count, dims) if dims else ()
-            member_dict[var_name.upper()] = (cumulated, strides, base_type)
+            elem_type = ti[2] if ti is not None and ti[3] == TypeClass.ARRAY else None
+            member_dict[var_name.upper()] = (cumulated, strides, base_type, elem_type)
             cumulated += flat_count
 
         pous[type_name] = _make_flat(member_dict, pous)
@@ -237,6 +240,9 @@ class POUSData:
                     base_offset += sum(i * s for i, s in zip(last_indices, strides))
                     flat_count = strides[-1] if strides else 1
                     dims = ()
+                    elem_ti = self._type_info.get(base_type)
+                    if elem_ti is not None and elem_ti[3] == TypeClass.ARRAY:
+                        base_type = elem_ti[2]
                 rest = segments[n:]
                 if not rest:
                     if flat_count == 1 and not dims:
