@@ -2363,7 +2363,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
         same_md5 = self._connector.MatchMD5(IOs_MD5)
         
         if self.IsPLCStarted():
-            if not same_md5:
+            if not(same_md5) or not(split):
                 # If IOs binary changed and PLC is running, we cannot hot-swap: must stop first
                 dialog = wx.MessageDialog(
                     self.AppFrame,
