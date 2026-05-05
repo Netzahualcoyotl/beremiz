@@ -1233,44 +1233,47 @@ class ProjectController(ConfigTreeNode, PLCControler):
 
     @staticmethod
     def _gen_build_retain_list(instances_c):
+        import targets.var_access
         lines = [
             "static void __build_retain_list(void)",
             "{",
             "    __retain_collect_ctx_t ctx = {",
-            "        retain_list, &retain_list[RETAIN_LIST_SIZE], 0};",
+            "        retain_list, &retain_list[RETAIN_LIST_SIZE], 0, 0};",
             "    unsigned int cum;",
         ]
-        for (path, _flat_count, base_type, _type_class,
+        for (path, flat_count, base_type, type_class,
              c_name, _c_type, recurse_fn, needs_deref) in instances_c:
             lines.append("    /* %s */" % path)
+            lines.append("    ctx.retain_until_cum = 0;")
             if recurse_fn is None:
-                # Simple leaf: check wrapper flags, add value
-                lines += [
-                    "    if (%s.flags & __IEC_RETAIN_FLAG) {" % c_name,
-                    "        if (ctx.cursor < ctx.end) {",
-                    "            ctx.cursor->value_ptr = &(%s.value);"
-                    % c_name,
-                    "            ctx.cursor->size = sizeof(%s);"
-                    % base_type.upper(),
-                    "            ctx.cursor++;",
-                    "        }",
-                    "        ctx.total_size += sizeof(%s);"
-                    % base_type.upper(),
-                    "    }",
-                ]
+                # Simple leaf: cb's leaf branch reads wrapper flags via
+                # UnpackVar and collects if retain-flagged.
+                lines.append(
+                    "    __retain_check_flags_cb(%s_ENUM, &%s, 0, 0, 1,"
+                    " \"%s\", &ctx);"
+                    % (base_type.upper(), c_name, path)
+                )
             elif needs_deref:
-                # Wrapped complex (struct/array): check wrapper flags,
-                # recurse into .value collecting ALL sub-leaves
+                # Wrapped complex (struct/array): announce the wrapper
+                # to the cb so it can apply the retain override on the
+                # whole subtree, then recurse into .value to enumerate
+                # leaves (which will be either kept by the override or
+                # filtered by their own flags).
+                wrapper_enum = ("ARRAY"
+                    if type_class == targets.var_access.TypeClass.ARRAY
+                    else "STRUCT")
                 lines += [
-                    "    if (%s.flags & __IEC_RETAIN_FLAG) {" % c_name,
-                    "        cum = 0;",
-                    "        %s(&(%s.value),"
-                    " __retain_collect_all_cb, &ctx, &cum);"
+                    "    __retain_check_flags_cb(%s_ENUM, &%s, 0, 0, %du,"
+                    " \"%s\", &ctx);"
+                    % (wrapper_enum, c_name, flat_count, path),
+                    "    cum = 0;",
+                    "    %s(&(%s.value),"
+                    " __retain_check_flags_cb, &ctx, &cum);"
                     % (recurse_fn, c_name),
-                    "    }",
                 ]
             else:
-                # FB/program: recurse checking retain flag on each member
+                # FB/program: no top-level wrapper flag — recurse and
+                # let cb check each member's flag.
                 lines += [
                     "    cum = 0;",
                     "    %s(&%s,"

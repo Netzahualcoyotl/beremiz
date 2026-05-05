@@ -123,28 +123,11 @@ typedef struct {
     retain_item_t *cursor;
     retain_item_t *end;
     unsigned int total_size;
+    /* When > cumulated, the current leaf falls inside a complex
+     * variable (array/struct) that was itself flagged retain, so
+     * its leaves must be collected unconditionally. */
+    unsigned int retain_until_cum;
 } __retain_collect_ctx_t;
-
-/* Compact form: collect ALL leaves unconditionally */
-static int __retain_collect_all_cb(
-    __IEC_types_enum type, void *ptr,
-    unsigned int cumulated, unsigned int local,
-    unsigned int count, const char *name, void *userdata)
-{
-    if (count > 1) return 1;  /* recurse deeper */
-    __retain_collect_ctx_t *ctx = (__retain_collect_ctx_t *)userdata;
-    void *value_p = NULL;
-    size_t size = 0;
-    resolved_var_t dsc = {ptr, type};
-    UnpackVar(&dsc, &value_p, NULL, &size);
-    if (ctx->cursor < ctx->end) {
-        ctx->cursor->value_ptr = value_p;
-        ctx->cursor->size = size;
-        ctx->cursor++;
-    }
-    ctx->total_size += size;
-    return 1;
-}
 
 /* Check retain flag on each leaf, add if retained */
 static int __retain_check_flags_cb(
@@ -152,14 +135,29 @@ static int __retain_check_flags_cb(
     unsigned int cumulated, unsigned int local,
     unsigned int count, const char *name, void *userdata)
 {
-    if (count > 1) return 1;  /* recurse into sub-FBs/complex */
     __retain_collect_ctx_t *ctx = (__retain_collect_ctx_t *)userdata;
+    if (count > 1) {
+        /* If a complex variable (array/struct) is itself flagged
+         * retain, mark its whole flat range so all sub-leaves are
+         * collected without re-checking flags. flags is the first
+         * byte of any __IEC_*_t wrapper, so it can be read through
+         * ptr without knowing the exact wrapper typedef. */
+        if (type == ARRAY_ENUM || type == STRUCT_ENUM) {
+            if (*((IEC_BYTE *)ptr) & __IEC_RETAIN_FLAG) {
+                unsigned int end = cumulated + count;
+                if (end > ctx->retain_until_cum)
+                    ctx->retain_until_cum = end;
+            }
+        }
+        return 1;  /* recurse into sub-FBs/complex */
+    }
     void *value_p = NULL;
     char flags = 0;
     size_t size = 0;
     resolved_var_t dsc = {ptr, type};
     UnpackVar(&dsc, &value_p, &flags, &size);
-    if (flags & __IEC_RETAIN_FLAG) {
+    if ((flags & __IEC_RETAIN_FLAG) ||
+        ctx->retain_until_cum > cumulated) {
         if (ctx->cursor < ctx->end) {
             ctx->cursor->value_ptr = value_p;
             ctx->cursor->size = size;
