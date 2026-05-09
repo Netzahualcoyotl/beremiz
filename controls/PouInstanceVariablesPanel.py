@@ -1001,8 +1001,13 @@ class PouInstanceVariablesPanel(wx.Panel):
                         item_path = "%s.%s" % (instance_path, item_infos.name)
                     else:
                         item_path = None
-                    self.SetPouType(tagname, item_path)
-                    self.ParentWindow.SelectProjectTreeItem(tagname)
+                    # Defer rebuild and don't Skip(): default double-click
+                    # expansion would otherwise fire on an item that
+                    # RefreshItems is about to delete.
+                    wx.CallAfter(self.SetPouType, tagname, item_path)
+                    wx.CallAfter(
+                        self.ParentWindow.SelectProjectTreeItem, tagname)
+                    return
         event.Skip()
 
     def _ShowArrayOffsetDialog(self, indices):
