@@ -149,10 +149,11 @@ def _build_members_by_type(pous_list):
 class POUSData:
     """Wraps POUS.py content for IDE-side path resolution and C code generation."""
 
-    def __init__(self, pous_list, instances_list, ticktime):
+    def __init__(self, pous_list, instances_list, ticktime, configname):
         self._pous_list_raw = pous_list
         self._instances_raw = instances_list
         self.ticktime = ticktime
+        self.configname = configname
         self._type_info = _build_type_info(self._pous_list_raw)
         self._type_classes = {entry[0].upper(): entry[1] for entry in self._pous_list_raw}
         self._members_by_type = _build_members_by_type(self._pous_list_raw)
@@ -161,7 +162,10 @@ class POUSData:
 
     def _instance_path(self, name, domain):
         """Construct instance path from name and domain."""
-        return (("CONFIG." + domain) if domain != "CONFIG" else domain) + '.' + name
+        if domain == self.configname:
+            return domain + '.' + name
+        else:
+            return self.configname + '.' + domain + '.' + name
 
     def _build_instance_index(self):
         """Build instance index from new-format instances."""

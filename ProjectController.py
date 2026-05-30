@@ -1144,7 +1144,8 @@ class ProjectController(ConfigTreeNode, PLCControler):
                 self._POUSData = POUSData(
                     pous_module['POUS'],
                     pous_module['Instances'],
-                    pous_module['Ticktime'])
+                    pous_module['Ticktime'],
+                    pous_module['ConfigName'])
                 self._Ticktime = self._POUSData.ticktime
 
             except Exception:
