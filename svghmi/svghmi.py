@@ -161,7 +161,8 @@ class SVGHMILibrary(POULibrary):
         self.on_hmitree_update()
 
         variable_decl_array = []
-        extern_variables_declarations = []
+        ptr_table_array = []
+        heartbeat_decl = []
         buf_index = 0
         item_count = 0
         found_heartbeat = False
@@ -172,29 +173,38 @@ class SVGHMILibrary(POULibrary):
             if not found_heartbeat and node.path == hearbeat_IEC_path:
                 hmi_tree_hearbeat_index = item_count
                 found_heartbeat = True
-                extern_variables_declarations += [
+                heartbeat_decl += [
                     "#define heartbeat_index "+str(hmi_tree_hearbeat_index)
                 ]
             if hasattr(node, "iectype"):
                 sz = DebugTypesSize.get(node.iectype, 0)
+                enum = node.iectype + {
+                    "EXT": "_P_ENUM",
+                    "IN":  "_P_ENUM",
+                    "MEM": "_O_ENUM",
+                    "OUT": "_O_ENUM",
+                    "VAR": "_ENUM"
+                }[node.vartype]
                 variable_decl_array += [
-                    "HMITREE_ITEM_INITIALIZER(" + node.cpath + ", " + node.iectype + {
-                        "EXT": "_P_ENUM",
-                        "IN":  "_P_ENUM",
-                        "MEM": "_O_ENUM",
-                        "OUT": "_O_ENUM",
-                        "VAR": "_ENUM"
-                    }[node.vartype] + ", " +
+                    "HMITREE_ITEM_INITIALIZER(" + node.cpath + ", " + enum + ", " +
                     str(buf_index) + ")"]
+                ptr_table_array += ["&(" + node.cpath + ")"]
                 buf_index += sz
                 item_count += 1
 
         assert(found_heartbeat)
 
-        extern_variables_declarations += [
+        extern_variables_declarations = [
             "extern %s %s;" % (c_type, c_name)
             for _path, _fc, _bt, _tc, c_name, c_type, _r, _nd in pous_data.instances_c
         ]
+
+        # In split (hot-swap) builds svghmi.c is compiled into the IOs .so, while the
+        # PLC program instances it observes live in the logic .so loaded afterwards.
+        # The item pointers therefore cannot be resolved at link time: they are left
+        # NULL in svghmi.c and filled at runtime from svghmi_ptr_table, which is emitted
+        # into a companion file (svghmi_ptrs.c) compiled into the logic .so.
+        split = self.GetCTR().IsSplitBuild()
 
         # C code to observe/access HMI tree variables
         svghmi_c_filepath = paths.AbsNeighbourFile(__file__, "svghmi.c")
@@ -203,7 +213,12 @@ class SVGHMILibrary(POULibrary):
         svghmi_c_file.close()
         svghmi_c_code = svghmi_c_code % {
             "variable_decl_array": ",\n".join(variable_decl_array),
-            "extern_variables_declarations": "\n".join(extern_variables_declarations),
+            # In split builds the extern instance declarations belong to svghmi_ptrs.c
+            # (logic .so); svghmi.c only needs the heartbeat index define.
+            "extern_variables_declarations": "\n".join(
+                heartbeat_decl if split
+                else heartbeat_decl + extern_variables_declarations),
+            "late_bind": "#define SVGHMI_LATE_BIND" if split else "",
             "buffer_size": buf_index,
             "item_count": item_count,
             "var_access_code": targets.GetCode("var_access.c"),
@@ -217,6 +232,23 @@ class SVGHMILibrary(POULibrary):
         gen_svghmi_c.write(svghmi_c_code)
         gen_svghmi_c.close()
 
+        # svghmi.c (item array, buffers, websocket iterators) is compiled into the IOs
+        # .so so the HMI server survives logic hot-swaps.  Its default location entry:
+        c_entries = [(["svghmi"], [(gen_svghmi_c_path, IECCFLAGS)], True)]
+
+        if split:
+            # Companion address table compiled into the logic .so.  An empty (falsy)
+            # location routes it there via toolchain_gcc's "for_ios = Location or ..."
+            svghmi_ptrs_code = open(
+                paths.AbsNeighbourFile(__file__, "svghmi_ptrs.c"), 'r').read()
+            svghmi_ptrs_code = svghmi_ptrs_code % {
+                "extern_variables_declarations": "\n".join(extern_variables_declarations),
+                "ptr_table_array": ",\n".join(ptr_table_array),
+                }
+            gen_svghmi_ptrs_c_path = os.path.join(buildpath, "svghmi_ptrs.c")
+            open(gen_svghmi_ptrs_c_path, 'w').write(svghmi_ptrs_code)
+            c_entries.append(([], [(gen_svghmi_ptrs_c_path, IECCFLAGS)], False))
+
         # Python based WebSocket HMITree Server
         svghmiserverfile = open(paths.AbsNeighbourFile(__file__, "svghmi_server.py"), 'r')
         svghmiservercode = svghmiserverfile.read()
@@ -227,7 +259,7 @@ class SVGHMILibrary(POULibrary):
         runtimefile.write(svghmiservercode)
         runtimefile.close()
 
-        return ((["svghmi"], [(gen_svghmi_c_path, IECCFLAGS)], True), "",
+        return (c_entries, "",
                 ("runtime_00_svghmi.py", open(runtimefile_path, "rb")))
                 #         ^
                 # note the double zero after "runtime_", 

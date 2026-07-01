@@ -15,6 +15,10 @@
 #define MAX_CONNECTIONS %(max_connections)d
 #define MAX_CON_INDEX MAX_CONNECTIONS - 1
 
+/* Defined in split (hot-swap) builds: item pointers are resolved at runtime from
+ * the logic .so instead of at link time. */
+%(late_bind)s
+
 static uint8_t hmi_hash[HMI_HASH_SIZE] = {%(hmi_hash_ints)s};
 
 /* PLC reads from that buffer */
@@ -70,8 +74,15 @@ struct hmi_tree_item_s{
 
 };
 
+#ifdef SVGHMI_LATE_BIND
+/* Logic .so not loaded yet at IOs .so link time: fill ptr at runtime. */
+#define HMITREE_ITEM_PTR(cpath) NULL
+#else
+#define HMITREE_ITEM_PTR(cpath) &(cpath)
+#endif
+
 #define HMITREE_ITEM_INITIALIZER(cpath,type,buf_index) {        \
-    &(cpath),                             /*ptr*/               \
+    HMITREE_ITEM_PTR(cpath),              /*ptr*/               \
     type,                                 /*type*/              \
     buf_index,                            /*buf_index*/         \
     buf_free,                             /*rstate*/            \
@@ -94,6 +105,33 @@ static hmi_tree_item_t *incoming_tail = NULL;
 static hmi_tree_item_t hmi_tree_items[] = {
 %(variable_decl_array)s
 };
+
+#ifdef SVGHMI_LATE_BIND
+#include <dlfcn.h>
+
+/* Address table defined in svghmi_ptrs.c (logic .so), in the same order as
+ * hmi_tree_items[].  Resolved from the logic .so handle at load / hot-swap. */
+static void * const *svghmi_ptr_table = NULL;
+
+/* Logic lifecycle hook (see plc_ios_main_head.c): a logic .so was bound.
+ * Runs on the main thread at load and hot-swap prepare — only performs dlsym,
+ * kept off the PLC/RT thread. */
+void __logic_bound_svghmi(void *handle)
+{
+    svghmi_ptr_table = (void * const *)dlsym(handle, "svghmi_ptr_table");
+}
+
+/* Logic lifecycle hook: the (possibly just swapped-in) logic .so became active.
+ * Points every item at its variable.  Runs at logic load and at hot-swap commit
+ * from the PLC thread (pointer copy only, no dlsym). */
+void __logic_active_svghmi(void)
+{
+    unsigned int i;
+    if (svghmi_ptr_table == NULL) return;
+    for (i = 0; i < HMI_ITEM_COUNT; i++)
+        hmi_tree_items[i].ptr = svghmi_ptr_table[i];
+}
+#endif
 
 #define __Unpack_desc_type hmi_tree_item_t
 

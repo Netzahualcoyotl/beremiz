@@ -764,7 +764,12 @@ class ProjectController(ConfigTreeNode, PLCControler):
                     (builder.GetTargetName(), lib.GetName()))
 
             res = lib.Generate_C(buildpath, self._POUSData, self.getPLC_CFLAGS())
-            LocatedCCodeAndFlags.append(res[:2])
+            # res[0] is either a single (location, cfiles, docalls) entry or a list
+            # of such entries (a library may target both the IOs and logic .so, e.g.
+            # SVGHMI in split hot-swap builds).
+            entries = res[0] if isinstance(res[0], list) else [res[0]]
+            for entry in entries:
+                LocatedCCodeAndFlags.append((entry, res[1]))
             if len(res) > 2:
                 Extras.extend(res[2:])
         return list(map(list, list(zip(*LocatedCCodeAndFlags)))) + [Extras]
@@ -1070,6 +1075,13 @@ class ProjectController(ConfigTreeNode, PLCControler):
 
         return self._builder
 
+    def IsSplitBuild(self):
+        """
+        True when the PLC is built as two shared objects (IOs .so + logic .so)
+        with hot-swap support, False for the single-binary SDK / ABI builds.
+        """
+        return not (GetSDKPath() or self.GetBuilder().getABIEnabled())
+
     def CheckChildCompatible(self, child):
         """
         Check if the child is compatible with the parent
@@ -1363,16 +1375,33 @@ class ProjectController(ConfigTreeNode, PLCControler):
                     req['current_version'],
                     req['minimum_version'])
                 if req else "EXT_NO_REQUIREMENT"
-                for _locstr, req in locreqs])
-     
+                for _locstr, req in locreqs]),
+            # Optional per-extension logic lifecycle hooks (weakly linked): an extension
+            # implements __logic_bound_<loc>/__logic_active_<loc> only if it keeps state
+            # tied to the logic .so and must react to (re)loads and hot-swaps.
+            "logic_hook_prototypes": "\n".join([
+                "\n".join([
+                    f"extern void __logic_bound_{locstr}(void *handle) __attribute__((weak));",
+                    f"extern void __logic_active_{locstr}(void) __attribute__((weak));"])
+                for locstr, _req in locreqs]),
+            "logic_bound_calls": "\n    ".join([
+                f"if(__logic_bound_{locstr}) __logic_bound_{locstr}(handle);"
+                for locstr, _req in locreqs]),
+            "logic_active_calls": "\n    ".join([
+                f"if(__logic_active_{locstr}) __logic_active_{locstr}();"
+                for locstr, _req in locreqs])
+
         } if not self.BeremizRoot.getDisable_Extensions() else {
-            
+
             "calls_prototypes": "\n",
             "retrieve_calls":   "\n",
             "publish_calls":    "\n",
             "init_calls":       "\n",
             "cleanup_calls":    "\n",
-            "extensions_requirements": "\n"
+            "extensions_requirements": "\n",
+            "logic_hook_prototypes": "\n",
+            "logic_bound_calls":     "\n",
+            "logic_active_calls":    "\n"
         }
 
     def Generate_plc_main(self):
@@ -1614,8 +1643,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
             # which appends plc_main_sdk.c from the SDK directory.
             self.additionalCFLAGS.append('"-I%s"' % sdk_path)
 
-        no_split = sdk_path or use_abi
-        if no_split:
+        if not self.IsSplitBuild():
             # use the legacy plc_main_head.c template
             c_source.append((self.Generate_plc_main, "plc_main.c", "PLC main", False))
         else:

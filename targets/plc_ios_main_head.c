@@ -38,8 +38,16 @@ void __init_logging(void);
 #endif
 #endif
 
-// Python eval purge — defined in plc_python.c when python_eval extension is active
-extern void PythonSetPurge(int value) __attribute__((weak));
+/*
+ * Per-extension logic lifecycle hooks (optional, weakly linked).
+ * Emitted per IO-extension location; an extension implements them only if it
+ * keeps state tied to the logic .so (e.g. pointers into logic-side memory that
+ * must be re-resolved across hot-swaps, or eval queues to re-enable):
+ *   void __logic_bound_<loc>(void *handle); // main thread: new logic .so bound
+ *   void __logic_active_<loc>(void);        // logic .so became active / swapped in
+ * NULL (skipped) for extensions that provide neither.
+ */
+%(logic_hook_prototypes)s
 
 /*
  *  Variables used by generated C softPLC and plugins
@@ -212,6 +220,10 @@ int loadPLCLogic(void *handle)
     plc_force_var_fn   = force_var;
     plc_logic_scan_fn  = scan;
     plc_logic_run_fn   = run;
+
+    /* Notify extensions: new logic .so bound, then active (main thread, PLC idle). */
+    %(logic_bound_calls)s
+    %(logic_active_calls)s
     return 0;
 }
 
@@ -239,6 +251,11 @@ int preparePLCLogicSwap(void *handle, copy_op_t *ops, size_t count)
     swap_force_var_fn    = force_var;
     swap_ops             = ops;
     swap_ops_count       = count;
+
+    /* Let extensions resolve against the new logic .so here (main thread — dlsym safe);
+     * activation is deferred to the swap commit in __run. */
+    %(logic_bound_calls)s
+
     atomic_store(&swap_pending, 1);
     return 0;
 }
@@ -276,11 +293,12 @@ unsigned int __run(unsigned int periods_passed)
         plc_logic_run_fn   = swap_run_fn;
         plc_logic_scan_fn  = swap_scan_fn;
         _plc_GetRetainSize = swap_get_retain_size;
-        atomic_store(&swap_pending, 2);  /* signal Python: swap done */
 
-        /* Re-enable Python eval FB processing now that swap is committed */
-        if (PythonSetPurge)
-            PythonSetPurge(0);
+        /* Activate the swapped-in logic for extensions, atomically with the run fn
+         * (PLC thread: hooks must not dlsym here — resolve was done in prepare). */
+        %(logic_active_calls)s
+
+        atomic_store(&swap_pending, 2);  /* signal Python: swap done */
     }
 
     %(retrieve_calls)s

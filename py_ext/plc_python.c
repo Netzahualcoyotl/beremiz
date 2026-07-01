@@ -232,3 +232,9 @@ void PythonSetPurge(int value){
 		PythonState &= ~PYTHON_PURGE;
 	}
 }
+
+/* Logic lifecycle hook (see plc_ios_main_head.c): the logic .so became active.
+ * Re-enable Python eval FB processing, purged around a hot-swap by PLCObject.py. */
+void __logic_active_py_ext(void){
+	PythonSetPurge(0);
+}

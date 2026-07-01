@@ -75,9 +75,15 @@ class POULibrary(object):
         Generate_C returns a tuple :
           (["library_name"],[(Cfiles, CFLAGS)], DoCalls), LDFLAGS, *extra_files
 
+        The first element may also be a list of such location-entries, when a
+        library needs to place C files in more than one target binary (e.g. a
+        split hot-swap build where some files go to the IOs .so and others to
+        the logic .so, selected by location truthiness in toolchain_gcc):
+          [(["name"], [(Cfiles, CFLAGS)], DoCalls), ([], [...], DoCalls)], LDFLAGS, *extra_files
+
         extra_files is:
           [(fname,fobject), ...]
-          
+
         DoCalls is either a Boolean, a dictionary, or a string,
         see definitions in ConfigTreeNode.CTNGenerate_C
         """
