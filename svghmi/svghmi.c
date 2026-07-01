@@ -4,132 +4,162 @@
 #include <stdio.h>
 #include "iec_types_all.h"
 #include "accessor.h"
-#include "POUS.h"
-#include "config.h"
 #include "beremiz.h"
+#include "svghmi.h"
 
 #define DEFAULT_REFRESH_PERIOD_MS 100
-#define HMI_BUFFER_SIZE %(buffer_size)d
-#define HMI_ITEM_COUNT %(item_count)d
-#define HMI_HASH_SIZE 8
-#define MAX_CONNECTIONS %(max_connections)d
-#define MAX_CON_INDEX MAX_CONNECTIONS - 1
 
-/* Defined in split (hot-swap) builds: item pointers are resolved at runtime from
- * the logic .so instead of at link time. */
+/* Defined in split (hot-swap) builds: the logic-side symbols (item array, buffers,
+ * geometry, hash) are resolved from the logic .so at runtime via dlsym; otherwise
+ * (single-binary SDK / ABI builds) they are referenced by direct linkage. */
 %(late_bind)s
 
-static uint8_t hmi_hash[HMI_HASH_SIZE] = {%(hmi_hash_ints)s};
+/*
+ * Everything that depends on the HMI tree / user settings is instantiated on the
+ * logic side (svghmi_data.c) and reached here through pointers, (re)resolved at
+ * each logic load / hot-swap.  svghmi.c — compiled into the stable IOs .so — is
+ * thus independent of HMI content.
+ */
+static hmi_tree_item_t *hmi_tree_items = NULL;
+static const uint8_t *hmi_hash = NULL;
 
-/* PLC reads from that buffer */
-static char rbuf[HMI_BUFFER_SIZE];
-
-/* PLC writes to that buffer */
-static char wbuf[HMI_BUFFER_SIZE];
-
-/* worst biggest send buffer. FIXME : use dynamic alloc ? */
-static char sbuf[HMI_HASH_SIZE +  HMI_BUFFER_SIZE + (HMI_ITEM_COUNT * sizeof(uint32_t))];
+/* PLC reads from rbuf, writes to wbuf; sbuf is the worst-case send buffer. */
+static char *rbuf = NULL;
+static char *wbuf = NULL;
+static char *sbuf = NULL;
 static unsigned int sbufidx;
 
-%(extern_variables_declarations)s
+static unsigned int hmi_item_count = 0;
+static unsigned int hmi_buffer_size = 0;
+static unsigned int hmi_max_connections = 0;
+static unsigned int hmi_sbuf_size = 0;
+static unsigned int hmi_heartbeat_index = 0;
 
 #define ticktime_ns %(PLC_ticktime)d
 static uint16_t ticktime_ms = (ticktime_ns>1000000)?
                      ticktime_ns/1000000:
                      1;
 
-typedef enum {
-    buf_free = 0,
-    buf_new,
-    buf_set,
-    buf_tosend
-} buf_state_t;
-
 static int global_write_dirty = 0;
 static uint32_t hmitree_rlock = 0;
 static uint32_t hmitree_wlock = 0;
 
-typedef struct hmi_tree_item_s hmi_tree_item_t;
-struct hmi_tree_item_s{
-    void *ptr;
-    __IEC_types_enum type;
-    uint32_t buf_index;
-
-    /* retrieve/read/recv */
-    buf_state_t rstate;
-
-    /* publish/write/send */
-    buf_state_t wstate[MAX_CONNECTIONS];
-
-    /* zero means not subscribed */
-    uint16_t refresh_period_ms[MAX_CONNECTIONS];
-    uint16_t age_ms[MAX_CONNECTIONS];
-
-    /* dual linked list for subscriptions */
-    hmi_tree_item_t *subscriptions_next;
-    hmi_tree_item_t *subscriptions_prev;
-
-    /* single linked list for changes from HMI */
-    hmi_tree_item_t *incoming_prev;
-
-};
-
-#ifdef SVGHMI_LATE_BIND
-/* Logic .so not loaded yet at IOs .so link time: fill ptr at runtime. */
-#define HMITREE_ITEM_PTR(cpath) NULL
-#else
-#define HMITREE_ITEM_PTR(cpath) &(cpath)
-#endif
-
-#define HMITREE_ITEM_INITIALIZER(cpath,type,buf_index) {        \
-    HMITREE_ITEM_PTR(cpath),              /*ptr*/               \
-    type,                                 /*type*/              \
-    buf_index,                            /*buf_index*/         \
-    buf_free,                             /*rstate*/            \
-    {[0 ... MAX_CON_INDEX] = buf_free},   /*wstate*/            \
-    {[0 ... MAX_CON_INDEX] = 0},          /*refresh_period_ms*/ \
-    {[0 ... MAX_CON_INDEX] = 0},          /*age_ms*/            \
-    NULL,                                 /*subscriptions_next*/\
-    NULL,                                 /*subscriptions_prev*/\
-    NULL}                                 /*incoming_next*/
-
-
-/* entry for dual linked list for HMI subscriptions */
-/* points to the end of the list */
-static hmi_tree_item_t  *subscriptions_tail = NULL;
-
-/* entry for single linked list for changes from HMI */
-/* points to the end of the list */
+/* subscription list tail / incoming-changes list tail (reset on each logic bind) */
+static hmi_tree_item_t *subscriptions_tail = NULL;
 static hmi_tree_item_t *incoming_tail = NULL;
 
-static hmi_tree_item_t hmi_tree_items[] = {
-%(variable_decl_array)s
-};
+/* Logic-side symbols (svghmi_data.c) gathered at resolve time. */
+typedef struct {
+    hmi_tree_item_t *items;
+    char *rbuf;
+    char *wbuf;
+    char *sbuf;
+    const uint8_t *hash;
+    unsigned int item_count;
+    unsigned int buffer_size;
+    unsigned int max_connections;
+    unsigned int sbuf_size;
+    unsigned int heartbeat_index;
+} svghmi_logic_t;
+
+static svghmi_logic_t bound_logic;
+static int bound_ok = 0;
 
 #ifdef SVGHMI_LATE_BIND
 #include <dlfcn.h>
-
-/* Address table defined in svghmi_ptrs.c (logic .so), in the same order as
- * hmi_tree_items[].  Resolved from the logic .so handle at load / hot-swap. */
-static void * const *svghmi_ptr_table = NULL;
-
-/* Logic lifecycle hook (see plc_ios_main_head.c): a logic .so was bound.
- * Runs on the main thread at load and hot-swap prepare — only performs dlsym,
- * kept off the PLC/RT thread. */
-void __logic_bound_svghmi(void *handle)
+/* Resolve logic-side symbols from the (just loaded / swapped-in) logic .so.
+ * Runs on the main thread (load / hot-swap prepare) — dlsym only. */
+static int svghmi_resolve_logic(void *handle, svghmi_logic_t *l)
 {
-    svghmi_ptr_table = (void * const *)dlsym(handle, "svghmi_ptr_table");
+    const unsigned int *item_count      = dlsym(handle, "svghmi_item_count");
+    const unsigned int *buffer_size     = dlsym(handle, "svghmi_buffer_size");
+    const unsigned int *max_connections = dlsym(handle, "svghmi_max_connections");
+    const unsigned int *sbuf_size       = dlsym(handle, "svghmi_sbuf_size");
+    const unsigned int *heartbeat_index = dlsym(handle, "svghmi_heartbeat_index");
+    l->items = dlsym(handle, "svghmi_hmi_tree_items");
+    l->rbuf  = dlsym(handle, "svghmi_rbuf");
+    l->wbuf  = dlsym(handle, "svghmi_wbuf");
+    l->sbuf  = dlsym(handle, "svghmi_sbuf");
+    l->hash  = dlsym(handle, "svghmi_hmi_hash");
+    if(!item_count || !buffer_size || !max_connections || !sbuf_size
+       || !heartbeat_index || !l->items || !l->rbuf || !l->wbuf || !l->sbuf || !l->hash)
+        return -1;
+    l->item_count      = *item_count;
+    l->buffer_size     = *buffer_size;
+    l->max_connections = *max_connections;
+    l->sbuf_size       = *sbuf_size;
+    l->heartbeat_index = *heartbeat_index;
+    return 0;
+}
+#else
+/* Single-binary build: the logic-side symbols live in the same binary. */
+extern hmi_tree_item_t svghmi_hmi_tree_items[];
+extern char svghmi_rbuf[];
+extern char svghmi_wbuf[];
+extern char svghmi_sbuf[];
+extern const uint8_t svghmi_hmi_hash[];
+extern const unsigned int svghmi_item_count;
+extern const unsigned int svghmi_buffer_size;
+extern const unsigned int svghmi_max_connections;
+extern const unsigned int svghmi_sbuf_size;
+extern const unsigned int svghmi_heartbeat_index;
+static int svghmi_resolve_logic(void *handle, svghmi_logic_t *l)
+{
+    (void)handle;
+    l->items = svghmi_hmi_tree_items;
+    l->rbuf  = svghmi_rbuf;
+    l->wbuf  = svghmi_wbuf;
+    l->sbuf  = svghmi_sbuf;
+    l->hash  = svghmi_hmi_hash;
+    l->item_count      = svghmi_item_count;
+    l->buffer_size     = svghmi_buffer_size;
+    l->max_connections = svghmi_max_connections;
+    l->sbuf_size       = svghmi_sbuf_size;
+    l->heartbeat_index = svghmi_heartbeat_index;
+    return 0;
+}
+#endif
+
+/* Point the runtime globals at the (fresh) logic-side arrays and reset the
+ * subscription lists.  On a hot-swap this discards the previous generation's HMI
+ * state — clients are forced to reconnect and re-subscribe. */
+static void svghmi_apply_logic(void)
+{
+    if(!bound_ok) return;
+    hmi_tree_items      = bound_logic.items;
+    rbuf                = bound_logic.rbuf;
+    wbuf                = bound_logic.wbuf;
+    sbuf                = bound_logic.sbuf;
+    hmi_hash            = bound_logic.hash;
+    hmi_item_count      = bound_logic.item_count;
+    hmi_buffer_size     = bound_logic.buffer_size;
+    hmi_max_connections = bound_logic.max_connections;
+    hmi_sbuf_size       = bound_logic.sbuf_size;
+    hmi_heartbeat_index = bound_logic.heartbeat_index;
+    subscriptions_tail  = NULL;
+    incoming_tail       = NULL;
 }
 
-/* Logic lifecycle hook: the (possibly just swapped-in) logic .so became active.
- * Points every item at its variable.  Runs at logic load and at hot-swap commit
- * from the PLC thread (pointer copy only, no dlsym). */
+#ifdef SVGHMI_LATE_BIND
+/*
+ * Logic lifecycle hooks (see plc_ios_main_head.c).
+ *  __logic_bound_svghmi : main thread, at load and hot-swap prepare — dlsym only.
+ *  __logic_active_svghmi: at load, and at hot-swap commit on the PLC thread — no
+ *                         dlsym; switches the pointers under the hmitree locks so
+ *                         websocket threads never observe a half-updated view.
+ */
+void __logic_bound_svghmi(void *handle)
+{
+    bound_ok = (svghmi_resolve_logic(handle, &bound_logic) == 0);
+}
+
 void __logic_active_svghmi(void)
 {
-    unsigned int i;
-    if (svghmi_ptr_table == NULL) return;
-    for (i = 0; i < HMI_ITEM_COUNT; i++)
-        hmi_tree_items[i].ptr = svghmi_ptr_table[i];
+    while(AtomicCompareExchange(&hmitree_wlock, 0, 1)) nRT_reschedule();
+    while(AtomicCompareExchange(&hmitree_rlock, 0, 1)) nRT_reschedule();
+    svghmi_apply_logic();
+    AtomicCompareExchange(&hmitree_rlock, 1, 0);
+    AtomicCompareExchange(&hmitree_wlock, 1, 0);
 }
 #endif
 
@@ -145,7 +175,7 @@ static int write_iterator(hmi_tree_item_t *dsc)
     void *value_p = NULL;
     size_t sz = 0;
     int do_sample = 0;
-    while(session_index < MAX_CONNECTIONS) {
+    while(session_index < hmi_max_connections) {
         if(dsc->wstate[session_index] == buf_set){
             /* if being subscribed */
             if(dsc->refresh_period_ms[session_index]){
@@ -218,7 +248,7 @@ static int send_iterator(uint32_t index, hmi_tree_item_t *dsc, uint32_t session_
     if(dsc->wstate[session_index] == buf_tosend)
     {
         uint32_t sz = __get_type_enum_size(dsc->type);
-        if(sbufidx + sizeof(uint32_t) + sz <=  sizeof(sbuf))
+        if(sbufidx + sizeof(uint32_t) + sz <=  hmi_sbuf_size)
         {
             void *src_p = &wbuf[dsc->buf_index];
             void *dst_p = &sbuf[sbufidx];
@@ -233,7 +263,7 @@ static int send_iterator(uint32_t index, hmi_tree_item_t *dsc, uint32_t session_
         }
         else
         {
-            printf("BUG!!! %%d + %%ld + %%d >  %%ld \n", sbufidx, sizeof(uint32_t), sz,  sizeof(sbuf));
+            printf("BUG!!! %%d + %%ld + %%d >  %%d \n", sbufidx, sizeof(uint32_t), sz,  hmi_sbuf_size);
             return EOVERFLOW;
         }
     }
@@ -267,7 +297,7 @@ void update_refresh_period(hmi_tree_item_t *dsc, uint32_t session_index, uint16_
         previously_subscribed |= (dsc->refresh_period_ms[other_session_index++] != 0);
     }
     session_already_subscriber = (dsc->refresh_period_ms[other_session_index++] != 0);
-    while(other_session_index < MAX_CONNECTIONS) {
+    while(other_session_index < hmi_max_connections) {
         previously_subscribed |= (dsc->refresh_period_ms[other_session_index++] != 0);
     }
     session_only_subscriber = session_already_subscriber && !previously_subscribed;
@@ -331,8 +361,16 @@ int svghmi_continue_collect;
 
 int __init_svghmi()
 {
-    memset(rbuf,0,sizeof(rbuf));
-    memset(wbuf,0,sizeof(wbuf));
+#ifndef SVGHMI_LATE_BIND
+    /* Single-binary build: resolve the same-binary logic symbols and adopt them now
+     * (split builds do this from the __logic_bound/__logic_active hooks instead). */
+    bound_ok = (svghmi_resolve_logic(NULL, &bound_logic) == 0);
+    svghmi_apply_logic();
+#endif
+    if(hmi_tree_items == NULL)
+        return 1;
+
+    /* rbuf/wbuf are zero-initialised static storage on the logic side */
 
     svghmi_continue_collect = 1;
 
@@ -506,10 +544,10 @@ int svghmi_recv_dispatch(uint32_t session_index, uint32_t size, const uint8_t *p
                 // unaligned access forces memcpy instead of cast
                 memcpy(&index, cursor, sizeof(uint32_t));
 
-                if(index == heartbeat_index)
+                if(index == hmi_heartbeat_index)
                     was_hearbeat = 1;
 
-                if(index < HMI_ITEM_COUNT)
+                if(index < hmi_item_count)
                 {
                     hmi_tree_item_t *dsc = &hmi_tree_items[index];
                     size_t sz = 0;
@@ -586,7 +624,7 @@ int svghmi_recv_dispatch(uint32_t session_index, uint32_t size, const uint8_t *p
                 memcpy(&index, cursor, sizeof(uint32_t));
                 memcpy(&refresh_period_ms, cursor+sizeof(uint32_t), sizeof(uint16_t));
 
-                if(index < HMI_ITEM_COUNT)
+                if(index < hmi_item_count)
                 {
                     if(!got_wlock){
                         while(AtomicCompareExchange(&hmitree_wlock, 0, 1)){

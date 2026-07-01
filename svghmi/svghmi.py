@@ -161,21 +161,15 @@ class SVGHMILibrary(POULibrary):
         self.on_hmitree_update()
 
         variable_decl_array = []
-        ptr_table_array = []
-        heartbeat_decl = []
         buf_index = 0
         item_count = 0
-        found_heartbeat = False
+        heartbeat_index = None
 
         hearbeat_IEC_path = ['CONFIG', 'HEARTBEAT']
 
         for node in self.hmi_tree_root.traverse():
-            if not found_heartbeat and node.path == hearbeat_IEC_path:
-                hmi_tree_hearbeat_index = item_count
-                found_heartbeat = True
-                heartbeat_decl += [
-                    "#define heartbeat_index "+str(hmi_tree_hearbeat_index)
-                ]
+            if heartbeat_index is None and node.path == hearbeat_IEC_path:
+                heartbeat_index = item_count
             if hasattr(node, "iectype"):
                 sz = DebugTypesSize.get(node.iectype, 0)
                 enum = node.iectype + {
@@ -188,66 +182,60 @@ class SVGHMILibrary(POULibrary):
                 variable_decl_array += [
                     "HMITREE_ITEM_INITIALIZER(" + node.cpath + ", " + enum + ", " +
                     str(buf_index) + ")"]
-                ptr_table_array += ["&(" + node.cpath + ")"]
                 buf_index += sz
                 item_count += 1
 
-        assert(found_heartbeat)
+        assert(heartbeat_index is not None)
 
         extern_variables_declarations = [
             "extern %s %s;" % (c_type, c_name)
             for _path, _fc, _bt, _tc, c_name, c_type, _r, _nd in pous_data.instances_c
         ]
 
-        # In split (hot-swap) builds svghmi.c is compiled into the IOs .so, while the
-        # PLC program instances it observes live in the logic .so loaded afterwards.
-        # The item pointers therefore cannot be resolved at link time: they are left
-        # NULL in svghmi.c and filled at runtime from svghmi_ptr_table, which is emitted
-        # into a companion file (svghmi_ptrs.c) compiled into the logic .so.
+        # HMI-tree / settings dependent data (item array, buffers, geometry, tree hash)
+        # is instantiated on the logic side (svghmi_data.c) so that svghmi.c — compiled
+        # into the IOs .so — stays independent of HMI content, and its &(cpath) item
+        # initializers resolve against the PLC program instances defined in the logic .so.
+        # In single-binary (SDK / ABI) builds both files land in the same binary and
+        # resolve by direct linkage.
         split = self.GetCTR().IsSplitBuild()
 
-        # C code to observe/access HMI tree variables
-        svghmi_c_filepath = paths.AbsNeighbourFile(__file__, "svghmi.c")
-        svghmi_c_file = open(svghmi_c_filepath, 'r')
-        svghmi_c_code = svghmi_c_file.read()
-        svghmi_c_file.close()
-        svghmi_c_code = svghmi_c_code % {
-            "variable_decl_array": ",\n".join(variable_decl_array),
-            # In split builds the extern instance declarations belong to svghmi_ptrs.c
-            # (logic .so); svghmi.c only needs the heartbeat index define.
-            "extern_variables_declarations": "\n".join(
-                heartbeat_decl if split
-                else heartbeat_decl + extern_variables_declarations),
+        # Shared header (item struct + macro + MAX_CONNECTIONS), included by both C files.
+        gen_svghmi_h_code = open(
+            paths.AbsNeighbourFile(__file__, "svghmi.h"), 'r').read() % {
+            "max_connections": self.maxConnectionsTotal}
+        open(os.path.join(buildpath, "svghmi.h"), 'w').write(gen_svghmi_h_code)
+
+        # IOs-side observer / websocket server: ticktime + variable access code only.
+        svghmi_c_code = open(
+            paths.AbsNeighbourFile(__file__, "svghmi.c"), 'r').read() % {
             "late_bind": "#define SVGHMI_LATE_BIND" if split else "",
-            "buffer_size": buf_index,
-            "item_count": item_count,
             "var_access_code": targets.GetCode("var_access.c"),
             "PLC_ticktime": self.GetCTR().GetTicktime(),
-            "hmi_hash_ints": ",".join(map(str,self.hmi_tree_root.hash())),
-            "max_connections": self.maxConnectionsTotal
             }
-
         gen_svghmi_c_path = os.path.join(buildpath, "svghmi.c")
-        gen_svghmi_c = open(gen_svghmi_c_path, 'w')
-        gen_svghmi_c.write(svghmi_c_code)
-        gen_svghmi_c.close()
+        open(gen_svghmi_c_path, 'w').write(svghmi_c_code)
 
-        # svghmi.c (item array, buffers, websocket iterators) is compiled into the IOs
-        # .so so the HMI server survives logic hot-swaps.  Its default location entry:
-        c_entries = [(["svghmi"], [(gen_svghmi_c_path, IECCFLAGS)], True)]
+        # Logic-side data: item array + buffers + geometry constants + tree fingerprint.
+        svghmi_data_code = open(
+            paths.AbsNeighbourFile(__file__, "svghmi_data.c"), 'r').read() % {
+            "extern_variables_declarations": "\n".join(extern_variables_declarations),
+            "variable_decl_array": ",\n".join(variable_decl_array),
+            "item_count": item_count,
+            "buffer_size": buf_index,
+            "max_connections": self.maxConnectionsTotal,
+            "heartbeat_index": heartbeat_index,
+            "hmi_hash_ints": ",".join(map(str, self.hmi_tree_root.hash())),
+            }
+        gen_svghmi_data_c_path = os.path.join(buildpath, "svghmi_data.c")
+        open(gen_svghmi_data_c_path, 'w').write(svghmi_data_code)
 
-        if split:
-            # Companion address table compiled into the logic .so.  An empty (falsy)
-            # location routes it there via toolchain_gcc's "for_ios = Location or ..."
-            svghmi_ptrs_code = open(
-                paths.AbsNeighbourFile(__file__, "svghmi_ptrs.c"), 'r').read()
-            svghmi_ptrs_code = svghmi_ptrs_code % {
-                "extern_variables_declarations": "\n".join(extern_variables_declarations),
-                "ptr_table_array": ",\n".join(ptr_table_array),
-                }
-            gen_svghmi_ptrs_c_path = os.path.join(buildpath, "svghmi_ptrs.c")
-            open(gen_svghmi_ptrs_c_path, 'w').write(svghmi_ptrs_code)
-            c_entries.append(([], [(gen_svghmi_ptrs_c_path, IECCFLAGS)], False))
+        # svghmi.c -> IOs .so (truthy location); svghmi_data.c -> logic .so (empty,
+        # falsy location routed there by toolchain_gcc's "for_ios = Location or ...").
+        c_entries = [
+            (["svghmi"], [(gen_svghmi_c_path, IECCFLAGS)], True),
+            ([], [(gen_svghmi_data_c_path, IECCFLAGS)], False),
+            ]
 
         # Python based WebSocket HMITree Server
         svghmiserverfile = open(paths.AbsNeighbourFile(__file__, "svghmi_server.py"), 'r')

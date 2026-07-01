@@ -296,6 +296,13 @@ def _runtime_00_svghmi_stop():
     svghmi_send_thread = None
 
 
+# Called by PLCObject after a logic hot-swap: the swapped-in logic .so has fresh HMI
+# state (item array / buffers), so close the sessions to force clients to reconnect
+# and re-subscribe.  The send thread keeps running.
+def _runtime_00_svghmi_swap():
+    svghmi_session_manager.close_all()
+
+
 class NoCacheFile(File):
     def render_GET(self, request):
         request.setHeader(b"Cache-Control", b"no-cache, no-store")

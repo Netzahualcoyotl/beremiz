@@ -463,7 +463,7 @@ class PLCObject(object):
 
     # used internaly
     def PythonRuntimeInit(self):
-        MethodNames = ["init", "start", "stop", "cleanup"]
+        MethodNames = ["init", "start", "stop", "swap", "cleanup"]
         self.python_runtime_vars = globals().copy()
         self.python_runtime_vars.update(self.pyruntimevars)
         parent = self
@@ -1050,6 +1050,12 @@ class PLCObject(object):
                 os.fsync(f.fileno())
 
             self.LogMessage("Hot-swap: logic updated to %s" % new_logic_md5)
+
+            # The swapped-in logic .so brings fresh runtime state for extensions that
+            # keep logic-tied storage (e.g. SVGHMI's HMI item array/buffers).  Notify
+            # them so they can force clients to reconnect / re-subscribe.
+            self.PythonRuntimeCall("swap")
+
             return True
 
         except Exception:
