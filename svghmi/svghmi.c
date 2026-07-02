@@ -60,6 +60,8 @@ typedef struct {
     unsigned int max_connections;
     unsigned int sbuf_size;
     unsigned int heartbeat_index;
+    unsigned int current_page_count;
+    const uint32_t *current_page_indices;
 } svghmi_logic_t;
 
 static svghmi_logic_t bound_logic;
@@ -76,19 +78,23 @@ static int svghmi_resolve_logic(void *handle, svghmi_logic_t *l)
     const unsigned int *max_connections = dlsym(handle, "svghmi_max_connections");
     const unsigned int *sbuf_size       = dlsym(handle, "svghmi_sbuf_size");
     const unsigned int *heartbeat_index = dlsym(handle, "svghmi_heartbeat_index");
+    const unsigned int *current_page_count = dlsym(handle, "svghmi_current_page_count");
     l->items = dlsym(handle, "svghmi_hmi_tree_items");
     l->rbuf  = dlsym(handle, "svghmi_rbuf");
     l->wbuf  = dlsym(handle, "svghmi_wbuf");
     l->sbuf  = dlsym(handle, "svghmi_sbuf");
     l->hash  = dlsym(handle, "svghmi_hmi_hash");
+    l->current_page_indices = dlsym(handle, "svghmi_current_page_indices");
     if(!item_count || !buffer_size || !max_connections || !sbuf_size
-       || !heartbeat_index || !l->items || !l->rbuf || !l->wbuf || !l->sbuf || !l->hash)
+       || !heartbeat_index || !current_page_count || !l->items || !l->rbuf
+       || !l->wbuf || !l->sbuf || !l->hash || !l->current_page_indices)
         return -1;
     l->item_count      = *item_count;
     l->buffer_size     = *buffer_size;
     l->max_connections = *max_connections;
     l->sbuf_size       = *sbuf_size;
     l->heartbeat_index = *heartbeat_index;
+    l->current_page_count = *current_page_count;
     return 0;
 }
 #else
@@ -103,6 +109,8 @@ extern const unsigned int svghmi_buffer_size;
 extern const unsigned int svghmi_max_connections;
 extern const unsigned int svghmi_sbuf_size;
 extern const unsigned int svghmi_heartbeat_index;
+extern const unsigned int svghmi_current_page_count;
+extern const uint32_t svghmi_current_page_indices[];
 static int svghmi_resolve_logic(void *handle, svghmi_logic_t *l)
 {
     (void)handle;
@@ -116,6 +124,8 @@ static int svghmi_resolve_logic(void *handle, svghmi_logic_t *l)
     l->max_connections = svghmi_max_connections;
     l->sbuf_size       = svghmi_sbuf_size;
     l->heartbeat_index = svghmi_heartbeat_index;
+    l->current_page_count   = svghmi_current_page_count;
+    l->current_page_indices = svghmi_current_page_indices;
     return 0;
 }
 #endif
@@ -141,6 +151,33 @@ static void svghmi_apply_logic(void)
 }
 
 #ifdef SVGHMI_LATE_BIND
+/* Carry each connected HMI's page position across a hot-swap: for every
+ * CURRENT_PAGE_<loc> item, re-apply its pre-swap value into the new logic's variable
+ * with a "!" prefix, so a reconnecting client navigates back to that page (see the
+ * "!"-prefix subscriber in svghmi.js).  old_items provides the pre-swap value; for a
+ * CONFIG global mirrored into the IOs .so, old and new resolve to the same storage
+ * (in-place prefix), otherwise the value is carried over explicitly. */
+static void svghmi_restore_pages(hmi_tree_item_t *old_items)
+{
+    unsigned int i;
+    for(i = 0; i < bound_logic.current_page_count; i++){
+        uint32_t idx = bound_logic.current_page_indices[i];
+        STRING *s = &((__IEC_STRING_t *)old_items[idx].ptr)->value;
+        STRING *d = &((__IEC_STRING_t *)bound_logic.items[idx].ptr)->value;
+        if(s->len == 0 || s->body[0] == '!' || s->len >= STR_MAX_LEN)
+            continue;
+        if(d == s){
+            memmove(&d->body[1], &d->body[0], d->len);
+            d->body[0] = '!';
+            d->len += 1;
+        } else {
+            d->body[0] = '!';
+            memcpy(&d->body[1], s->body, s->len);
+            d->len = s->len + 1;
+        }
+    }
+}
+
 /*
  * Logic lifecycle hooks (see plc_ios_main_head.c).
  *  __logic_bound_svghmi : main thread, at load and hot-swap prepare — dlsym only.
@@ -155,8 +192,14 @@ void __logic_bound_svghmi(void *handle)
 
 void __logic_active_svghmi(void)
 {
+    hmi_tree_item_t *old_items;
     while(AtomicCompareExchange(&hmitree_wlock, 0, 1)) nRT_reschedule();
     while(AtomicCompareExchange(&hmitree_rlock, 0, 1)) nRT_reschedule();
+    /* old_items is NULL at initial load; on a same-geometry hot-swap, carry each
+     * connected HMI's page position over to the swapped-in logic. */
+    old_items = hmi_tree_items;
+    if(old_items != NULL && bound_ok && hmi_item_count == bound_logic.item_count)
+        svghmi_restore_pages(old_items);
     svghmi_apply_logic();
     AtomicCompareExchange(&hmitree_rlock, 1, 0);
     AtomicCompareExchange(&hmitree_wlock, 1, 0);

@@ -37,3 +37,8 @@ const unsigned int svghmi_sbuf_size = sizeof(svghmi_sbuf);
 hmi_tree_item_t svghmi_hmi_tree_items[] = {
 %(variable_decl_array)s
 };
+
+/* Item indices of the per-instance CURRENT_PAGE_<loc> HMI_STRING globals, used to
+ * restore each connected HMI's page position across a hot-swap. */
+const unsigned int svghmi_current_page_count = %(current_page_count)d;
+const uint32_t svghmi_current_page_indices[] = {%(current_page_indices)s};

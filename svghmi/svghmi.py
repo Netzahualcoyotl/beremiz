@@ -161,6 +161,9 @@ class SVGHMILibrary(POULibrary):
         self.on_hmitree_update()
 
         variable_decl_array = []
+        # Item indices of the per-instance CURRENT_PAGE_<loc> HMI_STRING globals, so
+        # the runtime can restore each HMI's page position across a hot-swap.
+        current_page_indices = []
         buf_index = 0
         item_count = 0
         heartbeat_index = None
@@ -182,6 +185,8 @@ class SVGHMILibrary(POULibrary):
                 variable_decl_array += [
                     "HMITREE_ITEM_INITIALIZER(" + node.cpath + ", " + enum + ", " +
                     str(buf_index) + ")"]
+                if node.path[-1].startswith("CURRENT_PAGE_"):
+                    current_page_indices.append(item_count)
                 buf_index += sz
                 item_count += 1
 
@@ -226,6 +231,8 @@ class SVGHMILibrary(POULibrary):
             "max_connections": self.maxConnectionsTotal,
             "heartbeat_index": heartbeat_index,
             "hmi_hash_ints": ",".join(map(str, self.hmi_tree_root.hash())),
+            "current_page_count": len(current_page_indices),
+            "current_page_indices": ",".join(map(str, current_page_indices)) or "0",
             }
         gen_svghmi_data_c_path = os.path.join(buildpath, "svghmi_data.c")
         open(gen_svghmi_data_c_path, 'w').write(svghmi_data_code)
