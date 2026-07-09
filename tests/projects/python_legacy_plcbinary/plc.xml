@@ -406,7 +406,7 @@
               <connectionPointOut>
                 <relPosition x="290" y="15"/>
               </connectionPointOut>
-              <expression>'PLCIOsBinary.Simple_C_Call(5678)'</expression>
+              <expression>'PLCBinary.Simple_C_Call(5678)'</expression>
             </inVariable>
             <block localId="12" width="125" height="80" typeName="python_eval" instanceName="Block2" executionOrderId="0">
               <position x="686" y="687"/>

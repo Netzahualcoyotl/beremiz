@@ -7,7 +7,7 @@
   <globals>
     <xhtml:p><![CDATA[
 import time,sys,ctypes
-Python_to_C_Call = PLCIOsBinary.Python_to_C_Call
+Python_to_C_Call = PLCBinary.Python_to_C_Call
 Python_to_C_Call.restype = ctypes.c_int
 Python_to_C_Call.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
 
