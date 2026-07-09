@@ -173,9 +173,13 @@ class POUSData:
         cumulated = 0
         for name, domain, base_type, type_class, flat_count in self._instances_raw:
             path = self._instance_path(name, domain).upper()
-            dims = self._type_info.get(base_type.upper(), (None, None))[1] \
+            # Resolve DERIVED aliases (e.g. a named array type BLUPS ->
+            # __ARRAY_OF_CPLX_TYPE_32) to the concrete ARRAY/STRUCT/native type,
+            # otherwise dims and element indexing look up the alias which has none.
+            concrete = _resolve_base_type(base_type.upper(), self._type_info)
+            dims = self._type_info.get(concrete, (None, None))[1] \
                 if type_class == TypeClass.ARRAY else ()
-            self._inst_by_path[path] = (cumulated, flat_count, dims, base_type.upper())
+            self._inst_by_path[path] = (cumulated, flat_count, dims, concrete)
             cumulated += flat_count
         self._total_flat_count = cumulated
 
@@ -184,9 +188,14 @@ class POUSData:
         """Yield (path, flat_count, base_type, type_class, c_name, c_type, recurse_fn, needs_deref) for each instance."""
         for name, domain, base_type, type_class, flat_count in self._instances_raw:
             path = self._instance_path(name, domain)
-            c_type, c_recurse, needs_deref = self.c_type_and_recurse(base_type)
+            # Resolve DERIVED aliases (named array/enum/simple types) to their
+            # concrete type so the debugger generators see a real ARRAY/STRUCT/
+            # native type: named arrays get a proper __recurse (not a bogus
+            # <ALIAS>_ENUM scalar tag), and enums map to their storage type.
+            concrete = _resolve_base_type(base_type.upper(), self._type_info)
+            c_type, c_recurse, needs_deref = self.c_type_and_recurse(concrete)
             c_name = self.iec_path_to_c_name(path)
-            yield (path, flat_count, base_type, type_class, c_name, c_type, c_recurse, needs_deref)
+            yield (path, flat_count, concrete, type_class, c_name, c_type, c_recurse, needs_deref)
 
     def count_fb_instances(self, target_types):
         """Count total instances of given FB types, recursively through type tree."""
