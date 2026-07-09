@@ -155,10 +155,10 @@ class PythonFileCTNMixin(CodeFile):
             """\
 _%(name)s_ctype, _%(name)s_unpack, _%(name)s_pack = \\
     TypeTranslator["%(IECtype)s"]
-_PySafeGetPLCGlob_%(name)s = PLCBinary.__SafeGetPLCGlob_%(name)s
+_PySafeGetPLCGlob_%(name)s = PLCIOsBinary.__SafeGetPLCGlob_%(name)s
 _PySafeGetPLCGlob_%(name)s.restype = None
 _PySafeGetPLCGlob_%(name)s.argtypes = [ctypes.POINTER(_%(name)s_ctype)]
-_PySafeSetPLCGlob_%(name)s = PLCBinary.__SafeSetPLCGlob_%(name)s
+_PySafeSetPLCGlob_%(name)s = PLCIOsBinary.__SafeSetPLCGlob_%(name)s
 _PySafeSetPLCGlob_%(name)s.restype = None
 _PySafeSetPLCGlob_%(name)s.argtypes = [ctypes.POINTER(_%(name)s_ctype)]
 _%(pyextname)sGlobalsDesc.append((
@@ -169,9 +169,9 @@ _%(pyextname)sGlobalsDesc.append((
     %(onchange)s,
     %(opts)s))
 """ % varinfo + ("""
-_PyOnChangeCount_%(name)s = ctypes.c_uint.in_dll(PLCBinary,"__%(name)s_onchange_count")
-_PyOnChangeFirst_%(name)s = _%(name)s_ctype.in_dll(PLCBinary,"__%(name)s_onchange_firstval")
-_PyOnChangeLast_%(name)s = _%(name)s_ctype.in_dll(PLCBinary,"__%(name)s_onchange_lastval")
+_PyOnChangeCount_%(name)s = ctypes.c_uint.in_dll(PLCIOsBinary,"__%(name)s_onchange_count")
+_PyOnChangeFirst_%(name)s = _%(name)s_ctype.in_dll(PLCIOsBinary,"__%(name)s_onchange_firstval")
+_PyOnChangeLast_%(name)s = _%(name)s_ctype.in_dll(PLCIOsBinary,"__%(name)s_onchange_lastval")
 """ % varinfo if varinfo["onchange"] else "") for varinfo in varinfos])
 
         on_change_func_body = "\n".join(["""
@@ -217,7 +217,7 @@ _PyOnChangeLast_%(name)s = _%(name)s_ctype.in_dll(PLCBinary,"__%(name)s_onchange
 from runtime.typemapping import TypeTranslator
 import ctypes
 
-_PySafeGetChanges_%(pyextname)s = PLCBinary.PySafeGetChanges_%(location_str)s
+_PySafeGetChanges_%(pyextname)s = PLCIOsBinary.PySafeGetChanges_%(location_str)s
 _PySafeGetChanges_%(pyextname)s.restype = None
 _PySafeGetChanges_%(pyextname)s.argtypes = None
 

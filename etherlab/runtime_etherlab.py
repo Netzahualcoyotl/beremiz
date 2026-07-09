@@ -21,7 +21,7 @@ import re
 import runtime.PLCObject as PLCObject
 from runtime.loglevels import LogLevelsDict
 
-SDOAnswered = PLCBinary.SDOAnswered
+SDOAnswered = PLCIOsBinary.SDOAnswered
 SDOAnswered.restype = None
 SDOAnswered.argtypes = []
 

@@ -8,7 +8,7 @@ import util.paths as paths
 mqtt_python_lib_code = """
 def MQTT_publish(clientname, topic, payload, QoS = 1, Retained = False):
     c_function_name = "__mqtt_python_publish_" + clientname
-    c_function = getattr(PLCBinary, c_function_name)
+    c_function = getattr(PLCIOsBinary, c_function_name)
     c_function.restype = ctypes.c_int # error or 0
     c_function.argtypes = [
         ctypes.c_char_p,  # topic
@@ -52,7 +52,7 @@ def mqtt_per_client_cb_factory(clientname):
     
 def _MQTT_subscribe(clientname, topic, QoS):
     c_function_name = "__mqtt_python_subscribe_" + clientname
-    c_function = getattr(PLCBinary, c_function_name)
+    c_function = getattr(PLCIOsBinary, c_function_name)
     c_function.restype = ctypes.c_int # error or 0
     c_function.argtypes = [
         ctypes.c_char_p,  # topic
@@ -69,7 +69,7 @@ def MQTT_subscribe(clientname, topic, cb, QoS = 1):
         c_cbs = (mqtt_c_cb_onmsg_type(cb_onmsg),
                  mqtt_c_cb_resub_type(cb_resub))
         MQTT_client_cbs[clientname] = c_cbs
-        register_c_function = getattr(PLCBinary, "__mqtt_python_callback_setter_"+clientname )
+        register_c_function = getattr(PLCIOsBinary, "__mqtt_python_callback_setter_"+clientname )
         register_c_function.argtypes = [mqtt_c_cb_onmsg_type, mqtt_c_cb_resub_type]
         register_c_function(*c_cbs)
 

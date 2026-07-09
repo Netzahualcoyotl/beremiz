@@ -86,6 +86,43 @@ def RunInMain(func):
     return func_wrapper
 
 
+class _DeprecatedPLCBinary(object):
+    """
+    Backward-compat shim for the former single ``PLCBinary`` handle.
+
+    IOs and logic now live in two shared libraries exposed as ``PLCIOsBinary``
+    and ``PLCLogicBinary``.  Legacy runtime extension code that still references
+    ``PLCBinary`` gets this proxy: it resolves each requested symbol against the
+    IOs library first, then the logic library, and logs a one-shot deprecation
+    notice.  Note: ctypes ``in_dll`` reads ``_handle`` and therefore only ever
+    reaches the IOs binary (its historical target) — new logic-side globals
+    should use ``PLCLogicBinary`` explicitly.
+    """
+    def __init__(self, parent):
+        object.__setattr__(self, "_parent", parent)
+        object.__setattr__(self, "_warned", set())
+
+    def __getattr__(self, name):
+        parent = object.__getattribute__(self, "_parent")
+        warned = object.__getattribute__(self, "_warned")
+        for libname, lib in (("PLCIOsBinary", parent.PLClibraryHandle),
+                             ("PLCLogicBinary", parent.PLCLogicLibrary)):
+            if lib is None:
+                continue
+            try:
+                attr = getattr(lib, name)
+            except AttributeError:
+                continue
+            if name not in warned:
+                warned.add(name)
+                parent.LogMessage(1,
+                    "Deprecation: PLCBinary.%s resolved from %s — use "
+                    "PLCIOsBinary or PLCLogicBinary explicitly." % (name, libname))
+            return attr
+        raise AttributeError(
+            "'%s' not found in PLCIOsBinary nor PLCLogicBinary" % name)
+
+
 class PLCObject(object):
     def __init__(self, WorkingDir, argv, statuschange, evaluator, pyruntimevars,
                  servicename=None):
@@ -101,6 +138,7 @@ class PLCObject(object):
         self.pyruntimevars = pyruntimevars
         self.PLCStatus = PlcStatus.Empty
         self.PLClibraryHandle = None
+        self.PLCLogicLibrary = None
         self.PLClibraryLock = Lock()
         self.CurrentLogicFilename = None
         # Creates fake C funcs proxies
@@ -250,6 +288,7 @@ class PLCObject(object):
             self._PLCLogicLibraryHandle = dlopen(self._GetLogicLibFileName())
             PLCLogicLibrary = ctypes.CDLL(
                 self.CurrentLogicFilename, handle=self._PLCLogicLibraryHandle)
+            self.PLCLogicLibrary = PLCLogicLibrary
 
             PLC_ID_LOGIC = ctypes.c_char_p.in_dll(PLCLogicLibrary, "PLC_ID_LOGIC")
             if len(logic_md5) == 32:
@@ -405,6 +444,7 @@ class PLCObject(object):
         self._GetLogMessage = None
         self._PLClibraryHandle = None
         self.PLClibraryHandle = None
+        self.PLCLogicLibrary = None
         self._PLCLogicLibraryHandle = None
         self._PendingOldLogicHandle = None
         self._cleanupPLCLogic_fn = None
@@ -500,7 +540,9 @@ class PLCObject(object):
             "OnChange":       OnChangeStateClass(),
             "WorkingDir":     self.workingdir,
             "PLCObject":      self,
-            "PLCBinary":      self.PLClibraryHandle,
+            "PLCIOsBinary":   self.PLClibraryHandle,
+            "PLCLogicBinary": self.PLCLogicLibrary,
+            "PLCBinary":      _DeprecatedPLCBinary(self),
             "PLCGlobalsDesc": [],
             "OnIdle":         []})
 
@@ -1033,6 +1075,12 @@ class PLCObject(object):
 
                 self._cleanupPLCLogic_fn = new_lib["__cleanup_PLCLogic"]
                 self._cleanupPLCLogic_fn.restype = None
+
+                # Expose the swapped-in logic library to runtime extensions
+                # (PLCLogicBinary / the PLCBinary deprecation shim).
+                self.PLCLogicLibrary = new_lib
+                if self.python_runtime_vars is not None:
+                    self.python_runtime_vars["PLCLogicBinary"] = new_lib
             finally:
                 self.PLClibraryLock.release()
 

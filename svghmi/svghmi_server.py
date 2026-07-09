@@ -31,25 +31,25 @@ max_svghmi_sessions = None
 svghmi_watchdog = None
 
 
-svghmi_wait = PLCBinary.svghmi_wait
+svghmi_wait = PLCIOsBinary.svghmi_wait
 svghmi_wait.restype = ctypes.c_int # error or 0
 svghmi_wait.argtypes = []
 
-svghmi_continue_collect = ctypes.c_int.in_dll(PLCBinary, "svghmi_continue_collect")
+svghmi_continue_collect = ctypes.c_int.in_dll(PLCIOsBinary, "svghmi_continue_collect")
 
-svghmi_send_collect = PLCBinary.svghmi_send_collect
+svghmi_send_collect = PLCIOsBinary.svghmi_send_collect
 svghmi_send_collect.restype = ctypes.c_int # error or 0
 svghmi_send_collect.argtypes = [
     ctypes.c_uint32,  # index
     ctypes.POINTER(ctypes.c_uint32),  # size
     ctypes.POINTER(ctypes.c_void_p)]  # data ptr
 
-svghmi_reset = PLCBinary.svghmi_reset
+svghmi_reset = PLCIOsBinary.svghmi_reset
 svghmi_reset.restype = ctypes.c_int # error or 0
 svghmi_reset.argtypes = [
     ctypes.c_uint32]  # index
 
-svghmi_recv_dispatch = PLCBinary.svghmi_recv_dispatch
+svghmi_recv_dispatch = PLCIOsBinary.svghmi_recv_dispatch
 svghmi_recv_dispatch.restype = ctypes.c_int # error or 0
 svghmi_recv_dispatch.argtypes = [
     ctypes.c_uint32,  # index
