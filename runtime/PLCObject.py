@@ -302,19 +302,25 @@ class PLCObject(object):
             if _loadPLCLogic(self._PLCLogicLibraryHandle) != 0:
                 raise Exception("loadPLCLogic failed: symbols missing in logic .so")
 
-            # Initialize PLC logic instance tree (config_init__) and debug state.
-            # Called here (Python main thread) before the PLC thread is spawned.
+            # Bind logic init/cleanup. init runs once here (load-time); after a
+            # stop it is re-run (with cleanup first) on the next StartPLC.
+            # cleanup is deferred off the stop path to the next start or _FreePLC.
             # Use subscript to avoid Python name mangling of __ prefix
-            _initPLCLogic = PLCLogicLibrary["__init_PLCLogic"]
-            _initPLCLogic.restype = ctypes.c_int
-            _initPLCLogic.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
-            ret = _initPLCLogic(0, None)
-            if ret != 0:
-                raise Exception("__init_PLCLogic failed with %d" % ret)
+            self._initPLCLogic_fn = PLCLogicLibrary["__init_PLCLogic"]
+            self._initPLCLogic_fn.restype = ctypes.c_int
+            self._initPLCLogic_fn.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
 
-            # Keep cleanup function for _FreePLC / hot-swap rebinding
             self._cleanupPLCLogic_fn = PLCLogicLibrary["__cleanup_PLCLogic"]
             self._cleanupPLCLogic_fn.restype = None
+
+            # Initialize PLC logic instance tree (config_init__) and debug state.
+            # Called here (Python main thread) before the PLC thread is spawned.
+            self._PLCLogicInitialized = False
+            self._PLCLogicRestartPending = False
+            ret = self._initPLCLogic_fn(0, None)  # load-time init, lock already held
+            if ret != 0:
+                raise Exception("__init_PLCLogic failed with %d" % ret)
+            self._PLCLogicInitialized = True
 
             # --- Bind IOs .so interface functions ---
             self._startPLC = self.PLClibraryHandle.startPLC
@@ -447,7 +453,10 @@ class PLCObject(object):
         self.PLCLogicLibrary = None
         self._PLCLogicLibraryHandle = None
         self._PendingOldLogicHandle = None
+        self._initPLCLogic_fn = None
         self._cleanupPLCLogic_fn = None
+        self._PLCLogicInitialized = False
+        self._PLCLogicRestartPending = False
         self._swap_copy_ops = None  # keep ctypes array alive until next swap/unload
 
     def _FreePLC(self):
@@ -458,13 +467,16 @@ class PLCObject(object):
         """
         self.PLClibraryLock.acquire()
         try:
-            # Cleanup logic debug/retain state while both .so files are still mapped
-            cleanup = getattr(self, "_cleanupPLCLogic_fn", None)
-            if cleanup is not None:
-                try:
-                    cleanup()
-                except Exception:
-                    pass
+            # Flush any still-live logic tree (deferred cleanup from a stop, or a
+            # PLC loaded but never started) while both .so files are still mapped
+            if getattr(self, "_PLCLogicInitialized", False):
+                cleanup = getattr(self, "_cleanupPLCLogic_fn", None)
+                if cleanup is not None:
+                    try:
+                        cleanup()
+                    except Exception:
+                        pass
+                self._PLCLogicInitialized = False
 
             if getattr(self, "_PLCLogicLibraryHandle", None) is not None:
                 dlclose(self._PLCLogicLibraryHandle)
@@ -484,6 +496,37 @@ class PLCObject(object):
             self.PLClibraryLock.release()
 
         return False
+
+    def _InitPLCLogic(self):
+        """Run __init_PLCLogic (config_init__ + __init_debug). Caller ensures no live tree."""
+        init = getattr(self, "_initPLCLogic_fn", None)
+        if init is None:
+            return True  # nothing loaded / stub
+        self.PLClibraryLock.acquire()
+        try:
+            ret = init(0, None)
+        finally:
+            self.PLClibraryLock.release()
+        if ret != 0:
+            self.LogMessage(0, _("__init_PLCLogic failed with %d") % ret)
+            return False
+        self._PLCLogicInitialized = True
+        return True
+
+    def _CleanupPLCLogic(self):
+        """Run __cleanup_PLCLogic if a logic tree is live. Idempotent."""
+        if not self._PLCLogicInitialized:
+            return
+        cleanup = getattr(self, "_cleanupPLCLogic_fn", None)
+        if cleanup is not None:
+            self.PLClibraryLock.acquire()
+            try:
+                cleanup()
+            except Exception:
+                pass
+            finally:
+                self.PLClibraryLock.release()
+        self._PLCLogicInitialized = False
 
     def PythonRuntimeCall(self, methodname, use_evaluator=True, reverse_order=False):
         """
@@ -707,6 +750,13 @@ class PLCObject(object):
                 self._fail(_("Problem starting PLC : can't load PLC"))
 
         if self.CurrentPLCFilename is not None and self.PLCStatus == PlcStatus.Stopped:
+            if self._PLCLogicRestartPending:
+                # Restart after a stop: run the deferred cleanup, then a fresh init.
+                self._CleanupPLCLogic()
+                if not self._InitPLCLogic():
+                    self._fail(_("Problem starting PLC : logic init failed"))
+                    return
+                self._PLCLogicRestartPending = False
             self.PythonThreadCommand("PreStart")
             c_argv = ctypes.c_char_p * len(self.argv)
             res = self._startPLC(len(self.argv), c_argv(*self.argv))
@@ -737,6 +787,9 @@ class PLCObject(object):
             # Wait for python runtime stop to complete
             if self.PlcStopped.wait(timeout=5):
                 self.PLCStatus = PlcStatus.Stopped
+                # Defer __cleanup_PLCLogic to next start / _FreePLC; keep the
+                # stopped tree intact so it still holds the last run's values.
+                self._PLCLogicRestartPending = True
                 self.StatusChange()
             else:
                 self._fail(_("PLC timed out while stopping"))
@@ -1073,8 +1126,13 @@ class PLCObject(object):
 
                 self._ScanInstances = new_scan_fn
 
+                self._initPLCLogic_fn = _init_fn
                 self._cleanupPLCLogic_fn = new_lib["__cleanup_PLCLogic"]
                 self._cleanupPLCLogic_fn.restype = None
+                # New lib is live; old lib is abandoned (deferred dlclose, no
+                # cleanup). Flags now describe the swapped-in logic tree.
+                self._PLCLogicInitialized = True
+                self._PLCLogicRestartPending = False
 
                 # Expose the swapped-in logic library to runtime extensions
                 # (PLCLogicBinary / the PLCBinary deprecation shim).
