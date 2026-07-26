@@ -1494,6 +1494,44 @@ class ProjectController(ConfigTreeNode, PLCControler):
         ios_main_code += targets.GetTargetCode(self.GetBuilder().GetTargetName())
         return ios_main_code
 
+    def _get_plc_logic_main_fields(self):
+        """
+        Build template substitution fields for plc_logic_main.c.
+
+        Logic-side POU libraries (no Location, so their C files land in the logic .so)
+        request lifecycle calls by setting DoCalls to a string, whose content is the base
+        name of the __init_/__cleanup_/__retrieve_/__publish_ functions they expose
+        (e.g. "motion" -> __init_motion(), ...).
+        """
+        names = [DoCalls
+                 for loc, _Cfiles, DoCalls, *_requirements in self.LocationCFilesAndCFLAGS
+                 if not loc and isinstance(DoCalls, str)]
+
+        return {
+            "logic_calls_prototypes": "\n".join([
+                "\n".join([
+                    f"int __init_{n}(void);",
+                    f"void __cleanup_{n}(void);",
+                    f"void __retrieve_{n}(void);",
+                    f"void __publish_{n}(void);"])
+                for n in names]),
+            "logic_retrieve_calls": "\n    ".join([
+                f"__retrieve_{n}();" for n in names]),
+            "logic_publish_calls": "\n    ".join([
+                f"__publish_{n}();" for n in reversed(names)]),
+            "logic_init_calls": "\n    ".join([
+                f"if((res = __init_{n}())) return res;" for n in names]),
+            "logic_cleanup_calls": "\n    ".join([
+                f"__cleanup_{n}();" for n in reversed(names)]),
+        }
+
+    def Generate_plc_logic_main(self):
+        """
+        Generate logic .so shim (plc_logic_main.c): plc_logic_cycle wrapper,
+        __init_PLCLogic / __cleanup_PLCLogic, plus lifecycle calls to logic-side libraries.
+        """
+        return targets.GetCode("plc_logic_main.c") % self._get_plc_logic_main_fields()
+
     def _Build(self):
         """
         Method called by user to (re)build SoftPLC and confnode tree
@@ -1650,7 +1688,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
             # Split-binary build: IOs .so + logic .so with hot-swap support.
 
             # Logic .so shim: plc_logic_cycle wrapper + __init_PLCLogic / __cleanup_PLCLogic
-            c_source.append((partial(targets.GetCode, "plc_logic_main.c"), "plc_logic_main.c", "Logic shim", False))
+            c_source.append((self.Generate_plc_logic_main, "plc_logic_main.c", "Logic shim", False))
 
             # IOs .so runtime: PLC thread + hot-swap mechanism + extension dispatch
             c_source.append((self.Generate_plc_ios_main, "plc_ios_main.c", "IOs runtime", True))

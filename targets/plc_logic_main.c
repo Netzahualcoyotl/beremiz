@@ -25,6 +25,12 @@ void __cleanup_debug(void);
 void __publish_debug(void);
 #endif
 
+/*
+ * Prototypes of logic-side library lifecycle functions (e.g. motion kernel),
+ * emitted per POU library that requested calls via a string DoCalls.
+ **/
+%(logic_calls_prototypes)s
+
 char *PLC_ID_LOGIC = 0;
 
 /*
@@ -33,32 +39,37 @@ char *PLC_ID_LOGIC = 0;
  **/
 void plc_logic_cycle(unsigned int tick)
 {
+    %(logic_retrieve_calls)s
     config_run__(tick);
+    %(logic_publish_calls)s
 #ifndef PLC_NO_DEBUG
     __publish_debug();
 #endif
 }
 
 /*
- * __init_PLCLogic — initialize PLC logic instance tree and debug.
+ * __init_PLCLogic — initialize PLC logic instance tree, libraries and debug.
  * Called from PLCObject.py (Python main thread) via loadPLCLogic().
  **/
 int __init_PLCLogic(int argc, char **argv)
 {
+    int res = 0;
     config_init__();
+    %(logic_init_calls)s
 #ifndef PLC_NO_DEBUG
-    return __init_debug();
-#else
-    return 0;
+    if(res == 0)
+        res = __init_debug();
 #endif
+    return res;
 }
 
 /*
- * __cleanup_PLCLogic — cleanup PLC logic debug state.
+ * __cleanup_PLCLogic — cleanup PLC logic libraries and debug state.
  * Called from PLCObject.py after the IOs .so PLC thread has stopped.
  **/
 void __cleanup_PLCLogic(void)
 {
+    %(logic_cleanup_calls)s
 #ifndef PLC_NO_DEBUG
     __cleanup_debug();
 #endif
