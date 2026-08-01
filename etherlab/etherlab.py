@@ -692,7 +692,9 @@ for mapping needed location variables
         return extra_params
 
 
-USERDATA_DIR = wx.StandardPaths.Get().GetUserDataDir()
+# str() so that this still works when wx is the CLI's fake_wx stub, whose
+# GetUserDataDir() gives a FakeObject rather than a path
+USERDATA_DIR = str(wx.StandardPaths.Get().GetUserDataDir())
 if wx.Platform != '__WXMSW__':
     USERDATA_DIR += '_files'
 
