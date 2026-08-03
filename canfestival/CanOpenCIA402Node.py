@@ -1,0 +1,230 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# Copyright (C) 2026: Edouard TISSERANT
+#
+# See COPYING file for copyrights details.
+
+"""
+CiA402 axis over CANopen.
+
+CiA402 is the drive profile of the CANopen application layer, so everything
+about the profile itself lives in cia402/. What is specific here is that the
+objects an axis needs are mapped into PDOs by the CanOpen master, through
+config_utils, rather than being picked by the user.
+
+The confnode IEC channel of an axis *is* the CANopen node ID of the drive, so
+the axis sits on the very location the master already uses for that node, and
+the located variable names it computes are the ones config_utils gives to the
+pointers it exports from the master object dictionary.
+"""
+
+import os
+
+from plcopen.types_enums import LOCATION_CONFNODE
+
+from cia402.cia402 import \
+    CIA402NodeCTNMixin, \
+    GetCIA402XSD, \
+    ADD_NODE_VARIABLES, \
+    ADD_NODE_PUBLISH_TEMPLATE, \
+    ADD_NODE_RETRIEVE_TEMPLATE, \
+    MODE_OF_OPERATION_INDEXES, \
+    NODE_VARIABLES, \
+    TYPECONVERSION
+from canfestival.config_utils import IECToCOType
+
+# Objects the drive must carry for the axis to be of any use at all
+MANDATORY_INDEXES = (0x6040, 0x6041)
+
+
+class _CanOpenCIA402NodeCTN(CIA402NodeCTNMixin):
+    XSD = GetCIA402XSD("CIA402NodeParams")
+
+    CIA402_FB_PREFIX = "CANOPEN"
+    CIA402_FB_POU_PREFIX = "CanOpen"
+    CIA402_FIELDBUS_INCLUDES = ""
+
+# --------------------------------------------------
+#    node access
+# --------------------------------------------------
+
+    def GetNodeId(self):
+        """
+        The IEC channel of this confnode is the CANopen node ID of the drive.
+        """
+        return self.BaseParams.getIEC_Channel()
+
+    def GetSlaveNode(self):
+        """
+        @return the objdictgen Node built from the EDS of the drive, None when
+        no node with this ID is part of the network
+        """
+        slave = self.CTNParent.SlaveNodes.get(self.GetNodeId())
+        if slave is None:
+            return None
+        # nodes are shared between slaves using the same EDS, so the ID has to
+        # be set again before use, as NodeList.GetSlaveNodeEntry does
+        slave["Node"].SetNodeID(self.GetNodeId())
+        return slave["Node"]
+
+    def GetSizeOfType(self, var_type):
+        return TYPECONVERSION.get(self.GetCTRoot().GetBaseType(var_type), None)
+
+# --------------------------------------------------
+#    located variables
+# --------------------------------------------------
+
+    def GetVariableLocationTree(self):
+        # imported here, canfestival.py pulls this module in
+        from canfestival.canfestival import GetSlaveLocationTree
+
+        axis_name = self.CTNName()
+        children = self.CIA402LocationTreeChildren(axis_name)
+
+        node = self.GetSlaveNode()
+        if node is not None:
+            children.extend(GetSlaveLocationTree(node,
+                                                 self.GetCurrentLocation(),
+                                                 axis_name)["children"])
+
+        return {
+            "name": axis_name,
+            "type": LOCATION_CONFNODE,
+            "location": self.GetFullIEC_Channel(),
+            "children": children,
+        }
+
+# --------------------------------------------------
+#    CiA402 field bus hooks
+# --------------------------------------------------
+
+    def CIA402LocationSuffixes(self):
+        # CANopen index 0 can never hold process data, so the master uses it as
+        # the sub location of the located variables that are not object
+        # dictionary entries. Same reservation as the CAN controller
+        # diagnostics of GetSlaveLocationTree.
+        return (".0.0", ".0.402")
+
+    def CIA402NetworkPosition(self):
+        return self.GetNodeId()
+
+    def CIA402ResolveEntry(self, index, subindex, var_type, direction):
+        """
+        Keep only what the EDS of the drive declares as PDO mappable process
+        data of the expected type.
+        """
+        node = self.GetSlaveNode()
+        if node is None:
+            return None
+
+        cotype = IECToCOType[var_type]
+
+        # CiA402 describes a few objects EtherCAT slaves flatten to subindex 0
+        # as arrays, DigitalOutputs (0x60FE) being the usual one : its physical
+        # outputs are at subindex 1. Fall back to it rather than carrying a
+        # table of exceptions.
+        candidates = (subindex, 1) if subindex == 0 else (subindex,)
+
+        for sub in candidates:
+            if not node.IsEntry(index, sub):
+                continue
+            subentry_infos = node.GetSubentryInfos(index, sub)
+            if subentry_infos is None:
+                continue
+            if subentry_infos["pdo"] and subentry_infos["type"] == cotype:
+                return (index, sub)
+
+        return None
+
+    def CIA402DeclareEntryPointer(self, var_infos):
+        # Nothing to do : the master object dictionary owns the definition of
+        # that pointer, generated by gen_cfile from the mapping config_utils
+        # computed. This node only refers to it.
+        pass
+
+    def CIA402SelectVariables(self):
+        """
+        Every object the drive declares as process data is exchanged. Unlike
+        EtherCAT there is no PDO assignment to pick from : the master maps
+        whatever this returns.
+        """
+        node = self.GetSlaveNode()
+        if node is None:
+            self.FatalError(
+                _("CiA402 axis \"%s\" refers to CANopen node %d, which is not "
+                  "part of this network. Import the EDS of the drive with "
+                  "\"Add slave\" and give it node ID %d, or change the IEC "
+                  "channel of the axis.")
+                % (self.CTNName(), self.GetNodeId(), self.GetNodeId()))
+
+        variables = []
+        for (name, index, subindex, var_type, direction) in NODE_VARIABLES:
+            entry = self.CIA402ResolveEntry(index, subindex, var_type, direction)
+            if entry is None:
+                if index in MANDATORY_INDEXES:
+                    self.FatalError(
+                        _("CiA402 axis \"%s\": the EDS of CANopen node %d does "
+                          "not declare object 0x%04X as PDO mappable %s. A "
+                          "CiA402 drive has to map at least Controlword "
+                          "(0x6040) and Statusword (0x6041).")
+                        % (self.CTNName(), self.GetNodeId(), index, var_type))
+                continue
+            variables.append((name, entry[0], entry[1], var_type, direction))
+
+        mapped_indexes = {index for (_name, index, _sub, _type, _dir) in variables}
+
+        default_variables_retrieve = []
+        default_variables_publish = []
+        for var in ADD_NODE_VARIABLES:
+            if var['index'] not in mapped_indexes:
+                continue
+            if var['direction'] == "Q":
+                parsed_string = var['name'].replace("Target", "")
+                check_q_data = ADD_NODE_PUBLISH_TEMPLATE % {"base": parsed_string}
+                if check_q_data not in default_variables_publish:
+                    default_variables_publish.append(check_q_data)
+            else:
+                parsed_string = var['name'].replace("Actual", "")
+                check_i_data = ADD_NODE_RETRIEVE_TEMPLATE % {"base": parsed_string}
+                if check_i_data not in default_variables_retrieve:
+                    default_variables_retrieve.append(check_i_data)
+
+        modeofop_ok = all(index in mapped_indexes
+                          for index in MODE_OF_OPERATION_INDEXES)
+
+        return (variables,
+                default_variables_retrieve,
+                default_variables_publish,
+                modeofop_ok)
+
+    def CIA402FieldbusBlockExtraInputs(self):
+        # SDO access needs to know which CANopen network the drive is on, the
+        # master IEC channel identifies it in the generated runtime glue
+        return [{"input_name": "NETWORK",
+                 "input_value": str(self.CTNParent.BaseParams.getIEC_Channel())}]
+
+# --------------------------------------------------
+#    C code generation
+# --------------------------------------------------
+
+    def GetCIA402MasterLocations(self):
+        """
+        The objects this axis needs the master to map into PDOs, described the
+        way ProjectController describes the located variables of the program,
+        so that config_utils can consume both alike.
+        """
+        variables, _completion = self.CIA402CollectVariables()
+        base = self.GetCurrentLocation()
+        return [{"IEC_TYPE": var_infos["var_type"],
+                 "NAME":     var_infos["var_name"],
+                 "DIR":      var_infos["dir"],
+                 "SIZE":     var_infos["var_size"],
+                 "LOC":      base + (var_infos["index"], var_infos["subindex"])}
+                for var_infos in variables]
+
+    def CTNGenerate_C(self, buildpath, locations):
+        Gen_CIA402Nodefile_path = self.CIA402Generate_C(
+            buildpath, self.CIA402CollectVariables())
+
+        return [(Gen_CIA402Nodefile_path, '"-I%s"' % os.path.abspath(self.GetCTRoot().GetIECLibPath()))], "", True

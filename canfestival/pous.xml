@@ -250,6 +250,225 @@ EXECUTE0 := EXECUTE;
           </ST>
         </body>
       </pou>
+      <pou name="CanOpenGetTorqueLimit" pouType="functionBlock">
+        <interface>
+          <inputVars>
+            <variable name="NETWORK">
+              <type><INT/></type>
+            </variable>
+            <variable name="POS">
+              <type><INT/></type>
+              <documentation>
+                <xhtml:p><![CDATA[CANopen node ID of the drive]]></xhtml:p>
+              </documentation>
+            </variable>
+            <variable name="EXECUTE">
+              <type><BOOL/></type>
+            </variable>
+          </inputVars>
+          <outputVars>
+            <variable name="DONE">
+              <type><BOOL/></type>
+            </variable>
+            <variable name="BUSY">
+              <type><BOOL/></type>
+            </variable>
+            <variable name="ERROR">
+              <type><BOOL/></type>
+            </variable>
+            <variable name="ERRORID">
+              <type><DWORD/></type>
+            </variable>
+            <variable name="TORQUELIMITPOS">
+              <type><UINT/></type>
+            </variable>
+            <variable name="TORQUELIMITNEG">
+              <type><UINT/></type>
+            </variable>
+          </outputVars>
+          <localVars>
+            <variable name="SDO0">
+              <type><derived name="CanOpenSDOUpload"/></type>
+            </variable>
+            <variable name="SDO1">
+              <type><derived name="CanOpenSDOUpload"/></type>
+            </variable>
+            <variable name="SDOSTEP">
+              <type><INT/></type>
+              <initialValue><simpleValue value="0"/></initialValue>
+            </variable>
+            <variable name="EXECUTE0">
+              <type><BOOL/></type>
+            </variable>
+          </localVars>
+        </interface>
+        <body>
+          <ST>
+<![CDATA[(* CiA402 positive (0x60E0) and negative (0x60E1) torque limit values.
+   CanFestival refuses a second transfer towards a node while one is still
+   running, so they are read one after the other rather than in parallel. *)
+CASE SDOSTEP OF
+  0:
+    IF EXECUTE AND NOT EXECUTE0 THEN
+      SDOSTEP := 1;
+      DONE := FALSE;
+      ERROR := FALSE;
+      ERRORID := 0;
+      BUSY := TRUE;
+    END_IF;
+  1:
+    SDO0(EXECUTE := TRUE, NETWORK := NETWORK, NODEID := INT_TO_USINT(POS),
+         INDEX := 16#60E0, SUBINDEX := 0);
+    IF SDO0.DONE THEN
+      TORQUELIMITPOS := DWORD_TO_UINT(SDO0.VALUE);
+      SDOSTEP := 2;
+    ELSIF SDO0.ERROR THEN
+      ERROR := TRUE;
+      ERRORID := SDO0.ERRORID;
+      SDOSTEP := 3;
+    END_IF;
+  2:
+    SDO1(EXECUTE := TRUE, NETWORK := NETWORK, NODEID := INT_TO_USINT(POS),
+         INDEX := 16#60E1, SUBINDEX := 0);
+    IF SDO1.DONE THEN
+      TORQUELIMITNEG := DWORD_TO_UINT(SDO1.VALUE);
+      DONE := TRUE;
+      SDOSTEP := 3;
+    ELSIF SDO1.ERROR THEN
+      ERROR := TRUE;
+      ERRORID := SDO1.ERRORID;
+      SDOSTEP := 3;
+    END_IF;
+  3:
+    BUSY := FALSE;
+    IF NOT EXECUTE THEN
+      SDO0(EXECUTE := FALSE, NETWORK := NETWORK, NODEID := INT_TO_USINT(POS),
+           INDEX := 16#60E0, SUBINDEX := 0);
+      SDO1(EXECUTE := FALSE, NETWORK := NETWORK, NODEID := INT_TO_USINT(POS),
+           INDEX := 16#60E1, SUBINDEX := 0);
+      SDOSTEP := 0;
+      DONE := FALSE;
+      ERROR := FALSE;
+    END_IF;
+ELSE
+  SDOSTEP := 0;
+END_CASE;
+
+EXECUTE0 := EXECUTE;
+]]>
+          </ST>
+        </body>
+      </pou>
+      <pou name="CanOpenSetTorqueLimit" pouType="functionBlock">
+        <interface>
+          <inputVars>
+            <variable name="NETWORK">
+              <type><INT/></type>
+            </variable>
+            <variable name="POS">
+              <type><INT/></type>
+              <documentation>
+                <xhtml:p><![CDATA[CANopen node ID of the drive]]></xhtml:p>
+              </documentation>
+            </variable>
+            <variable name="EXECUTE">
+              <type><BOOL/></type>
+            </variable>
+            <variable name="TORQUELIMITPOS">
+              <type><UINT/></type>
+            </variable>
+            <variable name="TORQUELIMITNEG">
+              <type><UINT/></type>
+            </variable>
+          </inputVars>
+          <outputVars>
+            <variable name="DONE">
+              <type><BOOL/></type>
+            </variable>
+            <variable name="BUSY">
+              <type><BOOL/></type>
+            </variable>
+            <variable name="ERROR">
+              <type><BOOL/></type>
+            </variable>
+            <variable name="ERRORID">
+              <type><DWORD/></type>
+            </variable>
+          </outputVars>
+          <localVars>
+            <variable name="SDO0">
+              <type><derived name="CanOpenSDODownload"/></type>
+            </variable>
+            <variable name="SDO1">
+              <type><derived name="CanOpenSDODownload"/></type>
+            </variable>
+            <variable name="SDOSTEP">
+              <type><INT/></type>
+              <initialValue><simpleValue value="0"/></initialValue>
+            </variable>
+            <variable name="EXECUTE0">
+              <type><BOOL/></type>
+            </variable>
+          </localVars>
+        </interface>
+        <body>
+          <ST>
+<![CDATA[(* CiA402 positive (0x60E0) and negative (0x60E1) torque limit values,
+   written one after the other. See CanOpenGetTorqueLimit. *)
+CASE SDOSTEP OF
+  0:
+    IF EXECUTE AND NOT EXECUTE0 THEN
+      SDOSTEP := 1;
+      DONE := FALSE;
+      ERROR := FALSE;
+      ERRORID := 0;
+      BUSY := TRUE;
+    END_IF;
+  1:
+    SDO0(EXECUTE := TRUE, NETWORK := NETWORK, NODEID := INT_TO_USINT(POS),
+         INDEX := 16#60E0, SUBINDEX := 0, SIZE := 2,
+         VALUE := UINT_TO_DWORD(TORQUELIMITPOS));
+    IF SDO0.DONE THEN
+      SDOSTEP := 2;
+    ELSIF SDO0.ERROR THEN
+      ERROR := TRUE;
+      ERRORID := SDO0.ERRORID;
+      SDOSTEP := 3;
+    END_IF;
+  2:
+    SDO1(EXECUTE := TRUE, NETWORK := NETWORK, NODEID := INT_TO_USINT(POS),
+         INDEX := 16#60E1, SUBINDEX := 0, SIZE := 2,
+         VALUE := UINT_TO_DWORD(TORQUELIMITNEG));
+    IF SDO1.DONE THEN
+      DONE := TRUE;
+      SDOSTEP := 3;
+    ELSIF SDO1.ERROR THEN
+      ERROR := TRUE;
+      ERRORID := SDO1.ERRORID;
+      SDOSTEP := 3;
+    END_IF;
+  3:
+    BUSY := FALSE;
+    IF NOT EXECUTE THEN
+      SDO0(EXECUTE := FALSE, NETWORK := NETWORK, NODEID := INT_TO_USINT(POS),
+           INDEX := 16#60E0, SUBINDEX := 0, SIZE := 2,
+           VALUE := UINT_TO_DWORD(TORQUELIMITPOS));
+      SDO1(EXECUTE := FALSE, NETWORK := NETWORK, NODEID := INT_TO_USINT(POS),
+           INDEX := 16#60E1, SUBINDEX := 0, SIZE := 2,
+           VALUE := UINT_TO_DWORD(TORQUELIMITNEG));
+      SDOSTEP := 0;
+      DONE := FALSE;
+      ERROR := FALSE;
+    END_IF;
+ELSE
+  SDOSTEP := 0;
+END_CASE;
+
+EXECUTE0 := EXECUTE;
+]]>
+          </ST>
+        </body>
+      </pou>
     </pous>
   </types>
   <instances>

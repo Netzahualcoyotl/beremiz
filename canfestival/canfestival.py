@@ -1,28 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-# This file is part of Beremiz, a Integrated Development Environment for
-# programming IEC 61131-3 automates supporting plcopen standard and CanFestival.
-#
-# Copyright (C) 2007: Edouard TISSERANT and Laurent BESSARD
+# Copyright (C) 2007: Laurent BESSARD
 # Copyright (C) 2017: Andrey Skvortsov
+# Copyright (C) 2007-2026: Edouard TISSERANT
 #
 # See COPYING file for copyrights details.
-#
-# This program is free software; you can redistribute it and/or
-# modify it under the terms of the GNU General Public License
-# as published by the Free Software Foundation; either version 2
-# of the License, or (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program; if not, write to the Free Software
-# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-
 
 
 import os
@@ -50,6 +33,13 @@ from subindextable import IECTypeConversion, SizeConversion
 from canfestival import config_utils
 from canfestival.SlaveEditor import SlaveEditor, MasterViewer
 from canfestival.NetworkEditor import NetworkEditor
+
+# CiA402 axes need the Motion Control Library, which is an optional extension
+try:
+    from canfestival.CanOpenCIA402Node import _CanOpenCIA402NodeCTN
+    HAS_MCL = True
+except Exception:
+    HAS_MCL = False
 
 
 AddCatalog(os.path.join(ObjDictGenPath, "locale"))
@@ -433,11 +423,32 @@ class _NodeListCTN(NodeList):
     EditorType = NetworkEditor
     IconPath = os.path.join(ObjDictGenPath, "networkedit.png")
 
+    CTNChildrenTypes = []
+    if HAS_MCL:
+        CTNChildrenTypes.append(
+            ("CanOpenCIA402Node", _CanOpenCIA402NodeCTN, "CANopen CiA402 axis"))
+
     def __init__(self):
         manager = _NodeManager(self)
         NodeList.__init__(self, manager)
         self.LoadProject(self.CTNPath())
         self.SetNetworkName(self.BaseParams.getName())
+
+    def GetCIA402Children(self):
+        """
+        CiA402 axes of this network, by CANopen node ID.
+        """
+        return {child.GetNodeId(): child
+                for child in self.IECSortedChildren()
+                if isinstance(child, _CanOpenCIA402NodeCTN)} if HAS_MCL else {}
+
+    def CheckChildCompatible(self, child):
+        nodeid = child.GetNodeId()
+        if nodeid not in self.SlaveNodes:
+            self.GetCTRoot().logger.write_warning(
+                _("Warning: CiA402 axis \"%s\" refers to CANopen node %d, "
+                  "which is not part of network \"%s\"\n")
+                % (child.CTNName(), nodeid, self.BaseParams.getName()))
 
     def GetCanDevice(self):
         return self.CanFestivalNode.getCAN_Device()
@@ -473,14 +484,20 @@ class _NodeListCTN(NodeList):
         current_location = self.GetCurrentLocation()
         nodeindexes = list(self.SlaveNodes.keys())
         nodeindexes.sort()
+        cia402_children = self.GetCIA402Children()
         children = []
         children += [GetSlaveLocationTree(self.Manager.GetCurrentNodeCopy(),
                                           current_location,
                                           _("Local entries"),
                                           controller=True)]
+        # a node driven as a CiA402 axis is published by the axis itself, along
+        # with its network position and axis reference
         children += [GetSlaveLocationTree(self.SlaveNodes[nodeid]["Node"],
                                           current_location + (nodeid,),
-                                          self.SlaveNodes[nodeid]["Name"]) for nodeid in nodeindexes]
+                                          self.SlaveNodes[nodeid]["Name"])
+                     for nodeid in nodeindexes if nodeid not in cia402_children]
+        children += [child.GetVariableLocationTree()
+                     for _nodeid, child in sorted(cia402_children.items())]
 
         return {
             "name":     self.BaseParams.getName(),
@@ -569,6 +586,18 @@ class _NodeListCTN(NodeList):
         # define a unique name for the generated C file
         prefix = "_".join(map(str, current_location))
         Gen_OD_path = os.path.join(buildpath, "OD_%s.c" % prefix)
+
+        # A CiA402 axis needs its profile objects mapped whether the program
+        # uses them or not, so ask the axes before computing the mapping. Their
+        # locations are built the same way the located variables of the program
+        # are, and duplicates are harmless, so both can simply be concatenated.
+        locations = list(locations)
+        known = {location["NAME"] for location in locations}
+        for _nodeid, child in sorted(self.GetCIA402Children().items()):
+            locations.extend([location
+                              for location in child.GetCIA402MasterLocations()
+                              if location["NAME"] not in known])
+
         # Create a new copy of the model with DCF loaded with PDO mappings for desired location
         try:
             master, pointers = config_utils.GenerateConciseDCF(locations, current_location, self, self.CanFestivalNode.getSync_TPDOs(), "OD_%s" % prefix)
