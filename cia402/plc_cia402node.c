@@ -1,10 +1,14 @@
 /*
 
-Template C code used to produce target Ethercat C CIA402 code
+Template C code used to produce target C CIA402 code. CiA402 being the drive
+profile of the CANopen application layer, this is shared by every field bus
+reusing that application layer : EtherCAT (CoE) and CANopen itself.
 
-Copyright (C) 2011-2014: Laurent BESSARD, Edouard TISSERANT
+Copyright (C) 2011-2014: Laurent BESSARD
                          RTES Lab : CRKim, JBLee, youcu
                          Higen Motor : Donggu Kang
+Copyright (C) 2011-2026: Edouard TISSERANT
+
 
 Distributed under the terms of the GNU Lesser General Public License as
 published by the Free Software Foundation; either version 2 of the License, or
@@ -14,7 +18,7 @@ See COPYING file for copyrights details.
 
 */
 
-#include "ecrt.h"
+%(fieldbus_includes)s
 
 #include "beremiz.h"
 #include "iec_types_all.h"
@@ -36,7 +40,7 @@ xxxx xxxx x0xx 1111 | Fault reaction active
 xxxx xxxx x0xx 1000 | Fault
 */
 
-//ssh_add
+
 /* From CiA402, Page 63 Statusword for homing mode
 
 		Table 106 - Definition of bit 10, bit 12, bit 13
@@ -51,7 +55,7 @@ xx11 xxxx xxxx xxxx | reserved
 */
 
 #define FSAFromStatusWord(SW) (SW & 0x006f)
-//ssh_add
+
 #define HomingStatusWord(SW) (SW & 0x3400)
 #define FaultFromStatusWord(SW) (SW & 0x0008)
 #define NotReadyToSwitchOn  0b00000000 FSA_sep 0b00100000
@@ -63,7 +67,7 @@ xx11 xxxx xxxx xxxx | reserved
 #define FaultReactionActive 0b00001111 FSA_sep 0b00101111
 #define Fault               0b00001000 FSA_sep 0b00101000
 
-//ssh_add
+
 #define HomingInProgress	0b0000000000000000
 #define HomingNotRunning	0b0000010000000000
 #define HomingNotReached	0b0001000000000000
@@ -85,7 +89,7 @@ xx11 xxxx xxxx xxxx | reserved
 #define SW_TargetReached       0x0400
 #define SW_InternalLimitActive 0x0800
 
-//ssh_add
+
 #define SW_HomingAttained		0x1000
 #define SW_HomingError			0x2000
 
@@ -97,15 +101,15 @@ xx11 xxxx xxxx xxxx | reserved
 #define FaultReset      0x0080
 #define Halt            0x0100
 
-//ssh_add
+
 //#define Homing_OperationStart 0x0010
 #define Homing_OperationStart_Origin 0x0010
 #define Homing_OperationStart_Edit 0x001F
 
-IEC_INT beremiz__IW%(location)s = %(slave_pos)s;
-IEC_INT *__IW%(location)s = &beremiz__IW%(location)s;
-IEC_INT beremiz__IW%(location)s_402;
-IEC_INT *__IW%(location)s_402 = &beremiz__IW%(location)s_402;
+IEC_INT beremiz%(netpos_symbol)s = %(network_position)s;
+IEC_INT *%(netpos_symbol)s = &beremiz%(netpos_symbol)s;
+IEC_INT beremiz%(axisref_symbol)s;
+IEC_INT *%(axisref_symbol)s = &beremiz%(axisref_symbol)s;
 
 %(MCL_headers)s
 
@@ -138,10 +142,10 @@ void __cleanup_%(location)s()
 void __retrieve_%(location)s()
 {
 	if (__FirstTick) {
-		*__IW%(location)s_402 = __MK_Alloc_AXIS_REF();
+		*%(axisref_symbol)s = __MK_Alloc_AXIS_REF();
 		AxsPub.axis = 
-            __MK_GetPublic_AXIS_REF(*__IW%(location)s_402);
-		AxsPub.axis->NetworkPosition = beremiz__IW%(location)s;
+            __MK_GetPublic_AXIS_REF(*%(axisref_symbol)s);
+		AxsPub.axis->NetworkPosition = beremiz%(netpos_symbol)s;
 %(init_axis_params)s
 %(fieldbus_interface_definition)s
 		__FirstTick = 0;
@@ -200,7 +204,7 @@ void __publish_%(location)s()
 	    default:
 	    	break;
 	}
-	//ssh_add
+
 	if(FaultFromStatusWord(*(AxsPub.StatusWord)) == SW_Fault)
 		AxsPub.axis->DriveFault = 1;
 	else{
@@ -212,7 +216,7 @@ void __publish_%(location)s()
 		CW |= FaultReset;
 	}
 
-	//ssh_add
+
 	switch (HomingStatusWord(*(AxsPub.StatusWord))) {
 		case HomingInProgress:
 			break;
@@ -234,7 +238,7 @@ void __publish_%(location)s()
 	}
 #undef FSA_sep 
 
-	//ssh_add
+
 %(modeofop_homing_method)s
 
 	*(AxsPub.ControlWord) = CW;
