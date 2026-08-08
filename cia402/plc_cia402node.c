@@ -106,8 +106,6 @@ xx11 xxxx xxxx xxxx | reserved
 #define Homing_OperationStart_Origin 0x0010
 #define Homing_OperationStart_Edit 0x001F
 
-IEC_INT beremiz%(netpos_symbol)s = %(network_position)s;
-IEC_INT *%(netpos_symbol)s = &beremiz%(netpos_symbol)s;
 IEC_INT beremiz%(axisref_symbol)s;
 IEC_INT *%(axisref_symbol)s = &beremiz%(axisref_symbol)s;
 
@@ -126,7 +124,7 @@ static __CIA402Node AxsPub;
 
 %(extern_located_variables_declaration)s
 
-%(fieldbus_interface_declaration)s
+%(fieldbus_axis_network)s
 
 int __init_%(location)s()
 {
@@ -145,9 +143,8 @@ void __retrieve_%(location)s()
 		*%(axisref_symbol)s = __MK_Alloc_AXIS_REF();
 		AxsPub.axis = 
             __MK_GetPublic_AXIS_REF(*%(axisref_symbol)s);
-		AxsPub.axis->NetworkPosition = beremiz%(netpos_symbol)s;
+%(fieldbus_axis_network_binding)s
 %(init_axis_params)s
-%(fieldbus_interface_definition)s
 		__FirstTick = 0;
 	}
 

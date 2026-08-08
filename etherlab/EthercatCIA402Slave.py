@@ -11,8 +11,6 @@
 # See COPYING file for copyrights details.
 
 
-import os
-
 from plcopen.types_enums import LOCATION_CONFNODE
 
 from cia402.cia402 import \
@@ -62,9 +60,7 @@ class _EthercatCIA402SlaveCTN(CIA402NodeCTNMixin, _EthercatSlaveCTN):
 
     EditorType = CIA402NodeEditor
 
-    CIA402_FB_PREFIX = "ETHERLAB"
-    CIA402_FB_POU_PREFIX = "EtherLab"
-    CIA402_FIELDBUS_INCLUDES = '#include "ecrt.h"'
+    CIA402_FIELDBUS_INCLUDES = '#include "ecrt.h"\n#include "fieldbus_ethercat.h"'
     CIA402_EXTRA_PARAMS_NO_C = ETHERCAT_PARAMS_NO_C
 
 # --------------------------------------------------
@@ -165,11 +161,15 @@ class _EthercatCIA402SlaveCTN(CIA402NodeCTNMixin, _EthercatSlaveCTN):
 #    CiA402 field bus hooks
 # --------------------------------------------------
 
-    def CIA402LocationSuffixes(self):
-        return ("", ".402")
+    def CIA402AxisRefSuffix(self):
+        return ".402"
 
-    def CIA402NetworkPosition(self):
-        return self.GetSlavePos()
+    def CIA402AxisNetwork(self):
+        location = "_".join(map(str, self.GetCurrentLocation()))
+        return ("static ethercat_axis_network_u __axis_network_%s =\n"
+                "    { .addr = { ETHERCAT_AXIS_SENTINEL, %d } };" % (
+                    location, self.GetSlavePos()),
+                "        AxsPub.axis->Network = &__axis_network_%s;" % location)
 
     def CIA402ResolveEntry(self, index, subindex, var_type, direction):
         device_entries = self.CommonMethod.GetAllEntriesList()
@@ -261,4 +261,4 @@ class _EthercatCIA402SlaveCTN(CIA402NodeCTNMixin, _EthercatSlaveCTN):
         Gen_CIA402Nodefile_path = self.CIA402Generate_C(
             buildpath, self.CIA402CollectVariables())
 
-        return [(Gen_CIA402Nodefile_path, '"-I%s"' % os.path.abspath(self.GetCTRoot().GetIECLibPath()))], "", True
+        return [(Gen_CIA402Nodefile_path, self.CIA402CFlags())], "", True

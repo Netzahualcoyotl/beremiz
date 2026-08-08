@@ -19,8 +19,6 @@ the located variable names it computes are the ones config_utils gives to the
 pointers it exports from the master object dictionary.
 """
 
-import os
-
 from plcopen.types_enums import LOCATION_CONFNODE
 
 from cia402.cia402 import \
@@ -41,9 +39,7 @@ MANDATORY_INDEXES = (0x6040, 0x6041)
 class _CanOpenCIA402NodeCTN(CIA402NodeCTNMixin):
     XSD = GetCIA402XSD("CIA402NodeParams")
 
-    CIA402_FB_PREFIX = "CANOPEN"
-    CIA402_FB_POU_PREFIX = "CanOpen"
-    CIA402_FIELDBUS_INCLUDES = ""
+    CIA402_FIELDBUS_INCLUDES = '#include "fieldbus_canopen.h"'
 
 # --------------------------------------------------
 #    node access
@@ -99,15 +95,12 @@ class _CanOpenCIA402NodeCTN(CIA402NodeCTNMixin):
 #    CiA402 field bus hooks
 # --------------------------------------------------
 
-    def CIA402LocationSuffixes(self):
+    def CIA402AxisRefSuffix(self):
         # CANopen index 0 can never hold process data, so the master uses it as
         # the sub location of the located variables that are not object
         # dictionary entries. Same reservation as the CAN controller
         # diagnostics of GetSlaveLocationTree.
-        return (".0.0", ".0.402")
-
-    def CIA402NetworkPosition(self):
-        return self.GetNodeId()
+        return ".0.402"
 
     def CIA402ResolveEntry(self, index, subindex, var_type, direction):
         """
@@ -198,11 +191,16 @@ class _CanOpenCIA402NodeCTN(CIA402NodeCTNMixin):
                 default_variables_publish,
                 modeofop_ok)
 
-    def CIA402FieldbusBlockExtraInputs(self):
-        # SDO access needs to know which CANopen network the drive is on, the
-        # master IEC channel identifies it in the generated runtime glue
-        return [{"input_name": "NETWORK",
-                 "input_value": str(self.CTNParent.BaseParams.getIEC_Channel())}]
+    def CIA402AxisNetwork(self):
+        # A node ID alone does not say which bus the drive is on, so the
+        # descriptor MC_AxisToCanOpen reads back carries the master too
+        location = "_".join(map(str, self.GetCurrentLocation()))
+        return ("static canopen_axis_network_u __axis_network_%s =\n"
+                "    { .addr = { CANOPEN_AXIS_SENTINEL, %d, %d } };" % (
+                    location,
+                    self.CTNParent.BaseParams.getIEC_Channel(),
+                    self.GetNodeId()),
+                "        AxsPub.axis->Network = &__axis_network_%s;" % location)
 
 # --------------------------------------------------
 #    C code generation
@@ -227,4 +225,4 @@ class _CanOpenCIA402NodeCTN(CIA402NodeCTNMixin):
         Gen_CIA402Nodefile_path = self.CIA402Generate_C(
             buildpath, self.CIA402CollectVariables())
 
-        return [(Gen_CIA402Nodefile_path, '"-I%s"' % os.path.abspath(self.GetCTRoot().GetIECLibPath()))], "", True
+        return [(Gen_CIA402Nodefile_path, self.CIA402CFlags())], "", True

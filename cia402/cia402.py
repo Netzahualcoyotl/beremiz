@@ -27,10 +27,16 @@ import wx
 
 from plcopen.types_enums import LOCATION_VAR_INPUT
 
+import MotionLibrary
 from MotionLibrary import Headers, AxisXSD
 
 
 CIA402_NODE_PROFILE = 402
+
+# Where the headers describing what a field bus publishes about an axis are
+# kept. The generated node includes one of them, MCL owns them along with the
+# MC_AxisTo<field bus> blocks reading them back.
+MCL_DIRECTORY = os.path.dirname(os.path.abspath(MotionLibrary.__file__))
 
 # Modes of operation and its display. Both have to be mapped, or none.
 MODE_OF_OPERATION_INDEXES = (0x6060, 0x6061)
@@ -145,37 +151,6 @@ EXTRA_SECTIONS_XSD = "\n".join(["""\
 CIA402_XSD_FRAGMENT = EXTRA_SECTIONS_XSD + AxisXSD
 
 # ------------------- restored from the previous version ------------------
-BLOCK_INPUT_TEMPLATE = "    __SET_VAR(%(blockname)s->,%(input_name)s,, %(input_value)s);"
-BLOCK_OUTPUT_TEMPLATE = "    __SET_VAR(data__->,%(output_name)s,, __GET_VAR(%(blockname)s->%(output_name)s));"
-
-BLOCK_FUNCTION_TEMPLATE = """
-extern void %(fb_prefix)s%(ucase_blocktype)s_body__(%(fb_prefix)s%(ucase_blocktype)s_data__* data__);
-void __%(blocktype)s_%(location)s(MC_%(ucase_blocktype)s_data__ *data__) {
-__DECLARE_GLOBAL_PROTOTYPE(%(fb_prefix)s%(ucase_blocktype)s_data__, %(blockname)s);
-%(fb_prefix)s%(ucase_blocktype)s_data__* %(blockname)s = __GET_GLOBAL_%(blockname)s();
-__SET_VAR(%(blockname)s->, POS,, AxsPub.axis->NetworkPosition);
-%(extract_inputs)s
-%(fb_prefix)s%(ucase_blocktype)s_body__(%(blockname)s);
-%(return_outputs)s
-}
-"""
-
-BLOCK_FUNTION_DEFINITION_TEMPLATE = "        __CIA402Node_%(location)s.axis->__mcl_func_MC_%(blocktype)s = __%(blocktype)s_%(location)s;"
-# -------------------------------------------------------------------------
-
-# List of block to define to interface MCL to fieldbus for specific functions
-FIELDBUS_INTERFACE_GLOBAL_INSTANCES = [
-    {"blocktype": "GetTorqueLimit",
-     "inputs": [],
-     "outputs": [{"name": "TorqueLimitPos", "type": "UINT"},
-                 {"name": "TorqueLimitNeg", "type": "UINT"}]},
-    {"blocktype": "SetTorqueLimit",
-     "inputs": [{"name": "TorqueLimitPos", "type": "UINT"},
-                {"name": "TorqueLimitNeg", "type": "UINT"}],
-     "outputs": []},
-]
-
-# ------------------- restored from the previous version ------------------
 # add jblee
 MODEOFOP_HOMING_METHOD_TEMPLATE = """
 	if(*(AxsPub.ModesOfOperation) == 0x06){
@@ -247,12 +222,7 @@ class CIA402NodeCTNMixin(object):
 
     NODE_PROFILE = CIA402_NODE_PROFILE
 
-    # C symbol prefix of the field bus interface function blocks
-    # ("ETHERLAB" -> ETHERLABGETTORQUELIMIT_body__)
-    CIA402_FB_PREFIX = None
-    # POU type name prefix of the same blocks ("EtherLab" -> EtherLabGetTorqueLimit)
-    CIA402_FB_POU_PREFIX = None
-    # verbatim #include lines the field bus needs in the generated node
+    # verbatim lines the field bus needs at the top of the generated node
     CIA402_FIELDBUS_INCLUDES = ""
     # confnode parameters that are not axis_s members on this field bus
     CIA402_EXTRA_PARAMS_NO_C = frozenset()
@@ -265,13 +235,6 @@ class CIA402NodeCTNMixin(object):
             "method": "_getCIA402AxisRef",
             "push": True,
         },
-        {
-            "bitmap": "CIA402NetPos",
-            "name": _("Axis Pos"),
-            "tooltip": _("Initiate Drag'n drop of Network position located variable"),
-            "method": "_getCIA402NetworkPosition",
-            "push": True,
-        },
     ]
 
     def GetIconName(self):
@@ -281,17 +244,11 @@ class CIA402NodeCTNMixin(object):
 #    field bus hooks
 # --------------------------------------------------
 
-    def CIA402LocationSuffixes(self):
+    def CIA402AxisRefSuffix(self):
         """
-        Where this node's own located variables sit, relative to its confnode
+        Where the axis reference of this node sits, relative to its confnode
         location.
-        @return (network position suffix, axis ref suffix)
-        """
-        raise NotImplementedError
-
-    def CIA402NetworkPosition(self):
-        """
-        @return the field bus address of the drive, as an integer
+        @return the location suffix
         """
         raise NotImplementedError
 
@@ -318,12 +275,14 @@ class CIA402NodeCTNMixin(object):
         """
         raise NotImplementedError
 
-    def CIA402FieldbusBlockExtraInputs(self):
+    def CIA402AxisNetwork(self):
         """
-        @return extra constant inputs the MC_* -> field bus block wrappers must
-        set, as BLOCK_INPUT_TEMPLATE dictionaries
+        What this field bus publishes about the drive to whoever holds the axis
+        reference, MC_AxisTo<field bus> being the one reading it back.
+        @return (definition, binding) : the C definition of the field bus
+        identity of this axis, and the statement pointing axis_s.Network at it
         """
-        return []
+        return ("", "")
 
 # --------------------------------------------------
 #    located variables
@@ -331,38 +290,32 @@ class CIA402NodeCTNMixin(object):
 
     def CIA402Locations(self):
         """
-        Locations and C symbols of the two located variables every CiA402 node
-        publishes : its network position, and the MCL axis reference.
+        Location and C symbol of the only located variable a CiA402 node
+        publishes : the MCL axis reference. Where the drive sits on the bus is
+        told by MC_AxisTo<field bus>, from that reference.
         """
-        netpos_suffix, axisref_suffix = self.CIA402LocationSuffixes()
+        axisref_suffix = self.CIA402AxisRefSuffix()
         location = self.GetCurrentLocation()
         dotted = ".".join(map(str, location))
         under = "_".join(map(str, location))
         return {
             "location": under,
-            "netpos_location": "%%IW%s%s" % (dotted, netpos_suffix),
-            "netpos_symbol": "__IW%s%s" % (under, netpos_suffix.replace(".", "_")),
             "axisref_location": "%%IW%s%s" % (dotted, axisref_suffix),
             "axisref_symbol": "__IW%s%s" % (under, axisref_suffix.replace(".", "_")),
         }
 
     def CIA402LocationTreeChildren(self, axis_name):
-        locations = self.CIA402Locations()
         return [
             {
-                "name": name_frmt % (axis_name),
+                "name": "%s Axis Ref" % axis_name,
                 "type": LOCATION_VAR_INPUT,
                 "size": "W",
-                "IEC_type": iec_type,
-                "var_name": var_name_frmt % axis_name,
-                "location": locations[location_key],
+                "IEC_type": "AXIS_REF",
+                "var_name": axis_name,
+                "location": self.CIA402Locations()["axisref_location"],
                 "description": "",
                 "children": []
             }
-            for name_frmt, iec_type, var_name_frmt, location_key in [
-                ("%s Network Position", "UINT", "%s_pos", "netpos_location"),
-                ("%s Axis Ref", "AXIS_REF", "%s", "axisref_location")
-            ]
         ]
 
     def StartDragNDrop(self, data):
@@ -371,22 +324,10 @@ class CIA402NodeCTNMixin(object):
         dragSource.SetData(data_obj)
         dragSource.DoDragDrop()
 
-    def _getCIA402NetworkPosition(self):
-        self.StartDragNDrop(
-            (self.CIA402Locations()["netpos_location"],
-             "location", "UINT", self.CTNName() + "_Pos", ""))
-
     def _getCIA402AxisRef(self):
         self.StartDragNDrop(
             (self.CIA402Locations()["axisref_location"],
              "location", "AXIS_REF", self.CTNName(), ""))
-
-    def CTNGlobalInstances(self):
-        current_location = self.GetCurrentLocation()
-        return [("%s_%s" % (block_infos["blocktype"],
-                            "_".join(map(str, current_location))),
-                 "%s%s" % (self.CIA402_FB_POU_PREFIX, block_infos["blocktype"]), "")
-                for block_infos in FIELDBUS_INTERFACE_GLOBAL_INSTANCES]
 
     def CIA402SizeOfType(self, var_type):
         return TYPECONVERSION.get(self.GetCTRoot().GetBaseType(var_type), None)
@@ -394,6 +335,13 @@ class CIA402NodeCTNMixin(object):
 # --------------------------------------------------
 #    C code generation
 # --------------------------------------------------
+
+    def CIA402CFlags(self):
+        """
+        @return the include paths the generated node is compiled with
+        """
+        return '"-I%s" "-I%s"' % (
+            os.path.abspath(self.GetCTRoot().GetIECLibPath()), MCL_DIRECTORY)
 
     def CIA402CollectVariables(self):
         """
@@ -545,58 +493,21 @@ class CIA402NodeCTNMixin(object):
         plc_cia402node_code = plc_cia402node_file.read()
         plc_cia402node_file.close()
 
+        axis_network, axis_network_binding = self.CIA402AxisNetwork()
+
         str_completion.update({
-            "network_position": self.CIA402NetworkPosition(),
             "location": location_str,
-            "netpos_symbol": locations["netpos_symbol"],
             "axisref_symbol": locations["axisref_symbol"],
             "fieldbus_includes": self.CIA402_FIELDBUS_INCLUDES,
             "MCL_headers": Headers,
-            "fieldbus_interface_declaration": [],
-            "fieldbus_interface_definition": [],
+            "fieldbus_axis_network": axis_network,
+            "fieldbus_axis_network_binding": axis_network_binding,
         })
-
-        for blocktype_infos in FIELDBUS_INTERFACE_GLOBAL_INSTANCES:
-            texts = {
-                "blocktype": blocktype_infos["blocktype"],
-                "ucase_blocktype": blocktype_infos["blocktype"].upper(),
-                "fb_prefix": self.CIA402_FB_PREFIX,
-                "location": location_str
-            }
-            texts["blockname"] = "%(ucase_blocktype)s_%(location)s" % texts
-
-            inputs = [{"input_name": "POS", "input_value": str(self.CIA402NetworkPosition())},
-                      {"input_name": "EXECUTE", "input_value": "__GET_VAR(data__->EXECUTE)"}] +\
-                     self.CIA402FieldbusBlockExtraInputs() +\
-                     [{"input_name": input["name"].upper(),
-                       "input_value": "__GET_VAR(data__->%s)" % input["name"].upper()}
-                      for input in blocktype_infos["inputs"]]
-            input_texts = []
-            for input_infos in inputs:
-                input_infos.update(texts)
-                input_texts.append(BLOCK_INPUT_TEMPLATE % input_infos)
-            texts["extract_inputs"] = "\n".join(input_texts)
-
-            outputs = [{"output_name": output} for output in ["DONE", "BUSY", "ERROR"]] + \
-                      [{"output_name": output["name"].upper()} for output in blocktype_infos["outputs"]]
-            output_texts = []
-            for output_infos in outputs:
-                output_infos.update(texts)
-                output_texts.append(BLOCK_OUTPUT_TEMPLATE % output_infos)
-            texts["return_outputs"] = "\n".join(output_texts)
-
-            str_completion["fieldbus_interface_declaration"].append(
-                    BLOCK_FUNCTION_TEMPLATE % texts)
-
-            str_completion["fieldbus_interface_definition"].append(
-                    BLOCK_FUNTION_DEFINITION_TEMPLATE % texts)
 
         for var_infos in variables:
             self.CIA402DeclareEntryPointer(var_infos)
 
         for element in ["extern_located_variables_declaration",
-                        "fieldbus_interface_declaration",
-                        "fieldbus_interface_definition",
                         "entry_variables",
                         "init_axis_params",
                         "init_entry_variables",

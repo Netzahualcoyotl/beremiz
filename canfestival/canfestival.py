@@ -822,8 +822,8 @@ class RootClass(object):
 
 class CanFestival_Lib(POULibrary):
     """
-    SDO client function blocks, and the CiA402 field bus interface blocks built
-    on top of them.
+    SDO client function blocks, and the CiA402 torque limit blocks built on top
+    of them.
     TODO: complete the POUs and types according to CiA 405 and CiA 314
     """
 
