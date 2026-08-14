@@ -12,7 +12,9 @@
 #include "MQTTClient.h"
 #include "MQTTClientPersistence.h"
 
+#include "accessor.h"
 #include "POUS.h"
+#include "config.h"
 
 extern char *PLC_ID;
 extern char *PLC_SERVICE_NAME;
@@ -47,7 +49,7 @@ static void trace_callback(enum MQTTCLIENT_TRACE_LEVELS level, char* message)
 #define CHANGED 1
 #define UNCHANGED 0
 
-extern INT CONFIG__MQTT_STATUS_{locstr};
+#define SET_MQTT_STATUS(value) (*__GET_GLOBAL_MQTT_STATUS_{locstr}() = (value))
 
 #define DECL_VAR(iec_type, C_type, c_loc_name)                                                     \
 static C_type PLC_##c_loc_name##_buf;                                                              \
@@ -116,10 +118,10 @@ C_type *c_loc_name = &PLC_##c_loc_name##_buf;
 
 #define scanf_args_separator ,
 
-#define scanf_args_SIMPLE(C_type, C_name, name, data_ptr) scanf_arg_##C_type(&data_ptr->C_name)
+#define scanf_args_SIMPLE(C_type, C_name, name, data_ptr) scanf_arg_##C_type(&data_ptr->C_name.value)
 #define scanf_args_OBJECT(C_type, C_name, name, data_ptr) TYPE_##C_type(scanf_args, (&data_ptr->C_name))
 #define scanf_args_ARRAY(C_type, C_name, name, data_ptr) TYPE_##C_type(scanf_args, data_ptr->C_name.table)
-#define scanf_args_ARRAY_SIMPLE(C_type, index, data_ptr) scanf_arg_##C_type(&data_ptr[index])
+#define scanf_args_ARRAY_SIMPLE(C_type, index, data_ptr) scanf_arg_##C_type(&data_ptr[index].value)
 #define scanf_args_ARRAY_OBJECT(C_type, index, data_ptr) TYPE_##C_type(scanf_args, (&data_ptr[index]))
 
 #define   printf_arg_BOOL(arg) arg
@@ -137,11 +139,11 @@ C_type *c_loc_name = &PLC_##c_loc_name##_buf;
 
 #define printf_args_separator ,
 
-#define printf_args_SIMPLE(C_type, C_name, name, data_ptr) printf_arg_##C_type(data_ptr->C_name)
+#define printf_args_SIMPLE(C_type, C_name, name, data_ptr) printf_arg_##C_type(data_ptr->C_name.value)
 #define printf_args_OBJECT(C_type, C_name, name, data_ptr) TYPE_##C_type(printf_args, (&data_ptr->C_name))
-#define printf_args_ARRAY(C_type, C_name, name, data_ptr) TYPE_##C_type(printf_args, (&data_ptr->C_name.table))
-#define printf_args_ARRAY_SIMPLE(C_type, index, data_ptr) printf_arg_##C_type(data_ptr[index])
-#define printf_args_ARRAY_OBJECT(C_type, index, data_ptr) TYPE_##C_type(printf_args, (data_ptr[index]))
+#define printf_args_ARRAY(C_type, C_name, name, data_ptr) TYPE_##C_type(printf_args, data_ptr->C_name.table)
+#define printf_args_ARRAY_SIMPLE(C_type, index, data_ptr) printf_arg_##C_type(data_ptr[index].value)
+#define printf_args_ARRAY_OBJECT(C_type, index, data_ptr) TYPE_##C_type(printf_args, (&data_ptr[index]))
 
 static void scan_string(const char *str, int len, void *user_data) {{
 	IEC_STRING *iecstr = (IEC_STRING*)user_data;
@@ -591,7 +593,7 @@ exit_error:
 void __retrieve_{locstr}(void)
 {{
     if (pthread_mutex_trylock(&MQTT_retrieve_mutex) == 0){{
-        CONFIG__MQTT_STATUS_{locstr} = MQTT_is_disconnected ? 0 : 1;
+        SET_MQTT_STATUS(MQTT_is_disconnected ? 0 : 1);
 {retrieve}
         pthread_mutex_unlock(&MQTT_retrieve_mutex);
     }}
