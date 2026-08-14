@@ -15,7 +15,6 @@
 #include "iec_types_all.h"
 #include "accessor.h"
 #include "POUS.h"
-#include "config.h"
 #include "beremiz.h"
 #include "svghmi.h"
 

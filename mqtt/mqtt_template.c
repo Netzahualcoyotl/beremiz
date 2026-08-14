@@ -14,7 +14,8 @@
 
 #include "accessor.h"
 #include "POUS.h"
-#include "config.h"
+#include "globals_proto_c.h"
+#include "GLOBALS.h"
 
 extern char *PLC_ID;
 extern char *PLC_SERVICE_NAME;
