@@ -154,20 +154,13 @@ CIA402_XSD_FRAGMENT = EXTRA_SECTIONS_XSD + AxisXSD
 # add jblee
 MODEOFOP_HOMING_METHOD_TEMPLATE = """
 	if(*(AxsPub.ModesOfOperation) == 0x06){
-		IEC_BOOL homing = AxsPub.axis->HomingOperationStart;
-		if(power){
-			if (homing)
-				CW |= Homing_OperationStart_Origin;
-			else
-				CW &= ~(Homing_OperationStart_Origin);
-		}
-		else{
-			if (homing)
-				CW |= Homing_OperationStart_Edit;
-			else
-				CW &= ~(EnableOperation);
-		}
-
+		/* Homing starts on a rising edge of that bit, and only once the drive
+		   is in operation enabled : wait for the feedback, not for the request,
+		   and never enable operation here, this is MC_Power's job */
+		if(AxsPub.axis->PowerFeedback && AxsPub.axis->HomingOperationStart)
+			CW |= Homing_OperationStart_Origin;
+		else
+			CW &= ~(Homing_OperationStart_Origin);
 	}
 """
 

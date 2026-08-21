@@ -104,7 +104,6 @@ xx11 xxxx xxxx xxxx | reserved
 
 //#define Homing_OperationStart 0x0010
 #define Homing_OperationStart_Origin 0x0010
-#define Homing_OperationStart_Edit 0x001F
 
 IEC_INT beremiz%(axisref_symbol)s;
 IEC_INT *%(axisref_symbol)s = &beremiz%(axisref_symbol)s;
@@ -166,9 +165,11 @@ void __retrieve_%(location)s()
 
 void __publish_%(location)s()
 {
-	IEC_BOOL power = 
-        ((*(AxsPub.StatusWord) & SW_VoltageEnabled) != 0) 
-        && AxsPub.axis->Power;
+	/* MC_Power request. SW_VoltageEnabled can't take part in that decision :
+	   CiA402 leaves it "don't care" in every PDS state, and drives typically
+	   only report high voltage applied once the power stage has been switched
+	   on, which is precisely what this request is about to ask for. */
+	IEC_BOOL power = AxsPub.axis->Power;
     uint16_t CW = *(AxsPub.ControlWord);
 
 #define FSA_sep : case
@@ -178,18 +179,24 @@ void __publish_%(location)s()
             CW &= ~(SwitchOn | FaultReset);
             CW |= EnableVoltage | QuickStop;
 	    	break;
-	    case ReadyToSwitchOn :
 	    case OperationEnabled :
 	    	if (!power) {
+                /* Disable operation first, so that the drive gets a chance to
+                   stop as configured before its power stage is switched off */
                 CW &= ~(FaultReset | EnableOperation);
                 CW |= SwitchOn | EnableVoltage | QuickStop;
 	    		break;
 	    	}
+	    case ReadyToSwitchOn :
 	    case SwitchedOn :
-	    	if (power) {
-                CW &= ~(FaultReset);
-                CW |= SwitchOn | EnableVoltage | QuickStop | EnableOperation;
+	    	if (!power) {
+                /* Wait for MC_Power : only it can switch the power stage on */
+                CW &= ~(SwitchOn | FaultReset | EnableOperation);
+                CW |= EnableVoltage | QuickStop;
+	    		break;
 	    	}
+            CW &= ~(FaultReset);
+            CW |= SwitchOn | EnableVoltage | QuickStop | EnableOperation;
 	    	break;
 			//ssh_check
 //	    case Fault :
