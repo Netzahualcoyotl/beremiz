@@ -254,7 +254,7 @@ int preparePLCLogicSwap(void *handle, copy_op_t *ops, size_t count)
     swap_ops_count       = count;
 
     /* Let extensions resolve against the new logic .so here (main thread — dlsym safe);
-     * activation is deferred to the swap commit in __run. */
+     * activation is deferred to the swap commit in PLC_run. */
     %(logic_bound_calls)s
 
     atomic_store(&swap_pending, 1);
@@ -272,10 +272,10 @@ void ScanInstances(void *cb, void *userdata)
 }
 
 /*
- * __run: retrieve IO inputs, run PLC logic cycle, publish IO outputs.
+ * PLC_run: retrieve IO inputs, run PLC logic cycle, publish IO outputs.
  * Also checks for a pending hot-swap at the top of each cycle.
  **/
-unsigned int __run(unsigned int periods_passed)
+unsigned int PLC_run(unsigned int periods_passed)
 {
     PLC_GetTime(&__CURRENT_TIME);
 
@@ -313,7 +313,7 @@ unsigned int __run(unsigned int periods_passed)
 }
 
 /*
- * __init: initialize IO extensions only.
+ * PLC_init: initialize IO extensions only.
  * PLC logic initialization is done separately via loadPLCLogic().
  **/
 
@@ -324,7 +324,7 @@ extern beremiz_plc_ABI *beremiz_plc_interface_ptr;
 #define EXT_INIT_ARGS(index) 0,NULL
 #endif
 
-int __init(int argc, char **argv)
+int PLC_init(int argc, char **argv)
 {
     int res = 0;
     init_level = 0;
@@ -343,9 +343,9 @@ int __init(int argc, char **argv)
 }
 
 /*
- * __cleanup: cleanup IO extensions.
+ * PLC_cleanup: cleanup IO extensions.
  **/
-void __cleanup(void)
+void PLC_cleanup(void)
 {
     %(cleanup_calls)s
 }

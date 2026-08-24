@@ -5,9 +5,9 @@
 #include "beremiz.h"
 
 // Runtime -> PLC calls (plc_main_head.c)
-unsigned int __run(unsigned int periods_passed);
-int __init(int argc, char **argv);
-void __cleanup(void);
+unsigned int PLC_run(unsigned int periods_passed);
+int PLC_init(int argc, char **argv);
+void PLC_cleanup(void);
 
 #ifndef PLC_NO_DEBUG
 int GetDebugData(unsigned int *tick, unsigned int *size, void **buffer);
@@ -25,9 +25,9 @@ beremiz_plc_ABI *beremiz_plc_interface_ptr;
 void __init_ABI(beremiz_plc_ABI *interface) {
     beremiz_plc_interface_ptr = interface;
     beremiz_plc_interface_ptr->GetCommonTickTime = GetCommonTickTime;
-    beremiz_plc_interface_ptr->__run = __run;
-    beremiz_plc_interface_ptr->__init = __init;
-    beremiz_plc_interface_ptr->__cleanup = __cleanup;
+    beremiz_plc_interface_ptr->PLC_run = PLC_run;
+    beremiz_plc_interface_ptr->PLC_init = PLC_init;
+    beremiz_plc_interface_ptr->PLC_cleanup = PLC_cleanup;
 #ifndef PLC_NO_DEBUG
     beremiz_plc_interface_ptr->GetDebugData = GetDebugData;
     beremiz_plc_interface_ptr->ResetDebugVariables = ResetDebugVariables;
