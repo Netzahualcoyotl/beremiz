@@ -14,6 +14,15 @@ from os.path import join
 
 from util.paths import ThirdPartyPath
 
+# How PLC code is bound to the runtime :
+#  - MONOLITHIC : PLC code is linked into the runtime binary
+#  - SPLIT      : IOs and logic go to two shared objects loaded separately,
+#                 so that logic can be hot-swapped
+#  - ABI        : PLC code is a standalone blob, calling back into the
+#                 runtime through the ABI structure (Zephyr split firmware)
+PLC_MONOLITHIC, PLC_SPLIT, PLC_ABI = range(3)
+
+
 class Builder:
     def __init__(self, CTRInstance):
         self.CTRInstance = CTRInstance
@@ -100,8 +109,11 @@ class Builder:
     def getLoggingEnabled(self):
         return True
 
+    def getPLCBuildType(self):
+        return PLC_MONOLITHIC
+
     def getABIEnabled(self):
-        return False
+        return self.getPLCBuildType() == PLC_ABI
 
     def GetReservedIECChannels(self):
         return []

@@ -64,6 +64,7 @@ from PLCControler import PLCControler
 from plcopen.structures import IEC_KEYWORDS
 from plcopen.types_enums import ComputeConfigurationResourceName, ITEM_CONFNODE
 import targets
+from targets.Builder import PLC_SPLIT
 from runtime.typemapping import DebugTypesSize, UnpackDebugBuffer, ValueToIECBytes
 from runtime import PlcStatus
 from runtime.loglevels import LogLevelsCount, LogLevels
@@ -1078,9 +1079,9 @@ class ProjectController(ConfigTreeNode, PLCControler):
     def IsSplitBuild(self):
         """
         True when the PLC is built as two shared objects (IOs .so + logic .so)
-        with hot-swap support, False for the single-binary SDK / ABI builds.
+        with hot-swap support, False for monolithic and ABI builds.
         """
-        return not (GetSDKPath() or self.GetBuilder().getABIEnabled())
+        return self.GetBuilder().getPLCBuildType() == PLC_SPLIT
 
     def CheckChildCompatible(self, child):
         """
@@ -1684,6 +1685,9 @@ class ProjectController(ConfigTreeNode, PLCControler):
         if not self.IsSplitBuild():
             # use the legacy plc_main_head.c template
             c_source.append((self.Generate_plc_main, "plc_main.c", "PLC main", False))
+
+            # No IOs/logic distinction here, all C files land in the same binary
+            ios_runtime_entry = self.LocationCFilesAndCFLAGS[0]
         else:
             # Split-binary build: IOs .so + logic .so with hot-swap support.
 

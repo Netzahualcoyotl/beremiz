@@ -15,7 +15,7 @@ import re
 import subprocess
 import shlex
 from util.ProcessLogger import ProcessLogger
-from targets.Builder import Builder
+from targets.Builder import Builder, PLC_SPLIT
 
 includes_re = re.compile(r'\s*#include\s*["<]([^">]*)[">].*')
 
@@ -26,6 +26,12 @@ class toolchain_gcc(Builder):
     It cannot be used as this and should be inherited in a target specific
     class such as target_linux or target_win32
     """
+
+    def getPLCBuildType(self):
+        """
+        GCC builds PLC code as shared objects, so logic can be hot-swapped
+        """
+        return PLC_SPLIT
 
     def getBuilderCFLAGS(self):
         """
@@ -135,7 +141,7 @@ class toolchain_gcc(Builder):
             Builder_LDFLAGS = replace_sysroot(Builder_LDFLAGS)
 
         # ----------------- GENERATE OBJECT FILES ------------------------
-        split = not(self.getABIEnabled())
+        split = self.getPLCBuildType() == PLC_SPLIT
         
         ios_obns = []
         ios_objs = []
