@@ -6,6 +6,7 @@
 # See COPYING file for copyrights details.
 
 
+import errno
 import os.path
 import re
 import traceback
@@ -29,15 +30,38 @@ enum_to_PLCstatus = dict(map(lambda t:(t[1],t[0]),getmembers(PLCstatus_enum, lam
 class MissingCallException(Exception):
     pass
 
+class PLCObjectRefusedCall(Exception):
+    """PLC object answered with an error status.
+
+    The call didn't happen, but the PLC answered it, so unlike a transport
+    error this says nothing about the connection, which stays usable.
+    """
+    pass
+
 def ExceptionFromERPCReturn(ret):
-    return {1:Exception,
-            2:MissingCallException}.get(ret,ValueError)
+    # PLC object answers with errno values, so ENOSYS is what "the runtime
+    # doesn't implement this" looks like. Mapping 2 here instead used to catch
+    # ENOENT, which the blob calls return for an unknown blob ID, and report a
+    # lost transfer as an unsupported call.
+    return {errno.ENOSYS:MissingCallException}.get(ret,PLCObjectRefusedCall)
+
+def ERPCReturnMessage(method_name, ret):
+    """Call and the status it answered with.
+
+    PLC object statuses are errno values, so name them: "EBUSY (16)" says the
+    PLC was busy, where a bare "16" leaves the reader counting.
+    """
+    name = errno.errorcode.get(ret)
+    if name is None:
+        return "%s returned %d" % (method_name, ret)
+    return "%s returned %s (%d)" % (method_name, name, ret)
 
 def ReturnAsLastOutput(client_method, obj, args_wrapper, *args):
     retval = erpc.Reference()
     ret = client_method(obj, *args_wrapper(*args), retval)
     if ret != 0:
-        raise ExceptionFromERPCReturn(ret)(client_method.__name__)
+        raise ExceptionFromERPCReturn(ret)(
+            ERPCReturnMessage(client_method.__name__, ret))
     return retval.value
 
 def TranslatedReturnAsLastOutput(translator):
@@ -94,6 +118,9 @@ def rpc_wrapper(method_name, confnodesroot):
             confnodesroot.logger.write_error(_("ERPC request error: %s\n") % e)                
         except MissingCallException as e:
             confnodesroot.logger.write_warning(_("Remote call not supported: %s\n") % e)
+        except PLCObjectRefusedCall as e:
+            # Keep the connector: the PLC answered, it just declined to act.
+            confnodesroot.logger.write_error(_("PLC refused call: %s\n") % e)
         except Exception as e:
             errmess = _("Exception calling remote PLC object fucntion %s:\n") % method_name \
                         + traceback.format_exc()

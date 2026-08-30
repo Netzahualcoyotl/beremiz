@@ -2121,7 +2121,10 @@ class ProjectController(ConfigTreeNode, PLCControler):
         self.DebugUpdatePending = False
 
     def IsPLCStarted(self):
-        return self.previous_plcstate == PlcStatus.Started
+        if self._connector is None:
+            return False
+        plcstatus = self._connector.GetPLCstatus()
+        return plcstatus is not None and plcstatus[0] == PlcStatus.Started
 
     def AppendDebugUpdate(self):
         if not self.DebugUpdatePending :
@@ -2433,32 +2436,42 @@ class ProjectController(ConfigTreeNode, PLCControler):
                 _("Failed : Must build before transfer.\n"))
             return False
 
+        # Check if transfer is done by builder (i.e. direct flashing).
+        # PLC's MD5 nor its status mean anything.
+        # Running PLC, if any is out of reach anyway.
+        if self._connector.DelegateTransferToBuilder():
+            self.logger.write(_("Transfer is ensured by build system.\n"))
+            return builder.Transfer(self._connector)
+
         # Compare PLC project with PLC on target
         same_md5 = self._connector.MatchMD5(IOs_MD5)
         
         if self.IsPLCStarted():
             if not(same_md5) or not(split):
                 # If IOs binary changed and PLC is running, we cannot hot-swap: must stop first
-                dialog = wx.MessageDialog(
-                    self.AppFrame,
-                    _("IO code changed. PLC hot-swap is impossible. Stop PLC and transfer?") if split else
-                    _("Cannot transfer while PLC is running. Stop it now?"),
-                    style=wx.YES_NO | wx.CENTRE)
-                if dialog.ShowModal() == wx.ID_YES:
+                if self.AppFrame is None:
+                    # CLI case. Transfer requested, Stop PLC anyhow.
+                    self.logger.write(_("Stopping PLC before transfer\n"))
                     self._Stop()
+                    if self._connector is None:
+                        return
                 else:
-                    return
+                    # IDE case. Ask user.
+                    dialog = wx.MessageDialog(
+                        self.AppFrame,
+                        _("IO code changed. PLC hot-swap is impossible. Stop PLC and transfer?") if split else
+                        _("Cannot transfer while PLC is running. Stop it now?"),
+                        style=wx.YES_NO | wx.CENTRE)
+                    if dialog.ShowModal() == wx.ID_YES:
+                        self._Stop()
+                    else:
+                        return
             else:
                 self.logger.write(_("Same IOs, PLC logic hot-swap\n"))
                 self.KillDebugThread()
         else:
             if same_md5 and not(split):
                 self.logger.write(_("Latest build already matches current target. Transfering anyway...\n"))
-        
-        # Check if transfer is done by builder
-        if self._connector.DelegateTransferToBuilder():
-            self.logger.write(_("Transfer is ensured by build system.\n"))
-            return builder.Transfer(self._connector)
 
         # purge any non-finished transfer
         # note: this would abort any running transfer with error

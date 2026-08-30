@@ -37,6 +37,11 @@ uint32_t PLCObject::AppendChunkToBlob(
     // Append data to blob with given blobID
     // Output new blob's md5 into newBlobID
     // Return 0 if success
+
+    // Empty until the digest is known
+    // (prevents ERPC try to free() unallocated data)
+    newBlobID->dataLength = 0;
+
     newBlobID->data = (uint8_t *)erpc_malloc(MD5::digestsize);
     if (newBlobID->data == NULL)
     {
@@ -314,8 +319,6 @@ uint32_t PLCObject::PurgeBlobs(void)
     }
     m_mapBlobIDToBlob.clear();
 
-    m_status.PLCstatus = Empty;
-
     return 0;
 }
 
@@ -454,6 +457,13 @@ uint32_t PLCObject::SetTraceVariablesList(
 
 uint32_t PLCObject::StartPLC(void)
 {
+
+    if (m_status.PLCstatus == Started)
+    {
+        LogMessage(LOG_WARNING, "PLC already started");
+        return 0;
+    }
+
     LogMessage(LOG_INFO, "Starting PLC");
     uint32_t res = m_PLCSyms.startPLC(m_argc, m_argv);
     if(res != 0)
