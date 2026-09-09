@@ -219,7 +219,7 @@ endef
 
 define make_clitest_rule
 $(test_dir)/$(1)_results/.passed: built_apps
-	$(call prep_test,$(1)); bash -c '$(call log_command,$(2),$(1))'
+	$(call prep_test,$(1)); timeout 600 bash -c '$(call log_command,$(2),$(1))' || (echo "Test $(1) timed out or failed"; exit 1)
 	touch $$@
 
 # Manually invoked rule

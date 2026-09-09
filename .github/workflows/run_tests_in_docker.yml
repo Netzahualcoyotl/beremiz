@@ -92,6 +92,7 @@ jobs:
         ./exec_in_docker_as_root.sh "chown -R ubuntu:ubuntu /home/ubuntu/test"
         
     - name: Run tests in docker
+      timeout-minutes: 30  # Add this line
       run: |
         cd beremiz/tests/tools/Docker
         ./do_test_in_docker.sh cli_tests
