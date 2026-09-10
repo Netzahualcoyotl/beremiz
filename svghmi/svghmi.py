@@ -168,7 +168,7 @@ class SVGHMILibrary(POULibrary):
         item_count = 0
         heartbeat_index = None
 
-        hearbeat_IEC_path = ['CONFIG', 'HEARTBEAT']
+        hearbeat_IEC_path = [pous_data.configname.upper(), 'HEARTBEAT']
 
         for node in self.hmi_tree_root.traverse():
             if heartbeat_index is None and node.path == hearbeat_IEC_path:

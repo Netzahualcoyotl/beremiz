@@ -1465,7 +1465,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
             # Resource-scoped globals live in their resource .c file (logic .so) and are
             # never accessed directly by IO extension code — skip them to avoid accessor
             # function name clashes when multiple resources share the same variable name.
-            if domain.upper() != "CONFIG":
+            if domain.upper() != pd.configname.upper():
                 continue
             uc_name = name.upper()
             uc_domain = domain.upper()
