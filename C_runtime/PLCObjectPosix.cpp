@@ -259,8 +259,20 @@ uint32_t PLCObjectPosix::LoadPLC(void)
         return EINVAL;
     }
 
-    // Call __init_PLCLogic to run config_init__() and initialise the IEC instance tree.
-    // Without this, all FB EN flags stay zero (BSS) and FB bodies return immediately.
+    // Call __init_PLCLogicState to run config_init__() and initialise the IEC
+    // instance tree.  Without this, all FB EN flags stay zero (BSS) and FB
+    // bodies return immediately.
+    typedef void (*init_plc_logic_state_t)(void);
+    init_plc_logic_state_t init_plc_logic_state_fn =
+        (init_plc_logic_state_t)dlsym(m_logic_handle, "__init_PLCLogicState");
+    if (init_plc_logic_state_fn == NULL)
+    {
+        std::cout << "Error dlsym __init_PLCLogicState: " << dlerror() << std::endl;
+        return errno;
+    }
+    init_plc_logic_state_fn();
+
+    // Then __init_PLCLogic for the logic side libraries and debug state.
     typedef int (*init_plc_logic_t)(int, char **);
     init_plc_logic_t init_plc_logic_fn =
         (init_plc_logic_t)dlsym(m_logic_handle, "__init_PLCLogic");

@@ -29,7 +29,7 @@ import sys
 import traceback
 import shutil
 import platform as platform_module
-from time import time
+from time import time, sleep
 import hashlib
 from tempfile import mkstemp
 from functools import wraps
@@ -306,6 +306,10 @@ class PLCObject(object):
             # stop it is re-run (with cleanup first) on the next StartPLC.
             # cleanup is deferred off the stop path to the next start or _FreePLC.
             # Use subscript to avoid Python name mangling of __ prefix
+            self._initPLCLogicState_fn = PLCLogicLibrary["__init_PLCLogicState"]
+            self._initPLCLogicState_fn.restype = None
+            self._initPLCLogicState_fn.argtypes = []
+
             self._initPLCLogic_fn = PLCLogicLibrary["__init_PLCLogic"]
             self._initPLCLogic_fn.restype = ctypes.c_int
             self._initPLCLogic_fn.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
@@ -317,6 +321,7 @@ class PLCObject(object):
             # Called here (Python main thread) before the PLC thread is spawned.
             self._PLCLogicInitialized = False
             self._PLCLogicRestartPending = False
+            self._initPLCLogicState_fn()          # config_init__
             ret = self._initPLCLogic_fn(0, None)  # load-time init, lock already held
             if ret != 0:
                 raise Exception("__init_PLCLogic failed with %d" % ret)
@@ -329,6 +334,26 @@ class PLCObject(object):
 
             self._stopPLC_real = self.PLClibraryHandle.stopPLC
             self._stopPLC_real.restype = None
+
+            self._plcIECTypeSize = self.PLClibraryHandle.plcIECTypeSize
+            self._plcIECTypeSize.restype = ctypes.c_size_t
+            self._plcIECTypeSize.argtypes = [ctypes.c_int]
+
+            self._getInitState = self.PLClibraryHandle.getPLCLogicInitState
+            self._getInitState.restype = ctypes.c_int
+            self._getInitState.argtypes = []
+
+            self._cancelInit = self.PLClibraryHandle.cancelPLCLogicInit
+            self._cancelInit.restype = ctypes.c_int
+            self._cancelInit.argtypes = []
+
+            self._getSwapState = self.PLClibraryHandle.getPLCLogicSwapState
+            self._getSwapState.restype = ctypes.c_int
+            self._getSwapState.argtypes = []
+
+            self._cancelSwap = self.PLClibraryHandle.cancelPLCLogicSwap
+            self._cancelSwap.restype = ctypes.c_int
+            self._cancelSwap.argtypes = []
 
             self._PythonSetPurge = getattr(self.PLClibraryHandle, "PythonSetPurge", None)
             if self._PythonSetPurge is not None:
@@ -397,7 +422,7 @@ class PLCObject(object):
 
             self._ScanInstances = PLCLogicLibrary.ScanInstances
             self._ScanInstances.restype = None
-            self._ScanInstances.argtypes = [SCAN_CB_FUNC, ctypes.c_void_p]
+            self._ScanInstances.argtypes = [SCAN_CB_FUNC, ctypes.c_void_p, ctypes.c_int]
 
             self._loading_error = None
 
@@ -445,7 +470,7 @@ class PLCObject(object):
         self._resumeDebug = lambda: None
         self._PythonIterator = lambda *a: ""
         self._PythonSetPurge = None
-        self._ScanInstances = lambda cb, ud: None
+        self._ScanInstances = lambda cb, ud, co: None
         self._GetLogCount = None
         self._LogMessage = None
         self._GetLogMessage = None
@@ -455,10 +480,17 @@ class PLCObject(object):
         self._PLCLogicLibraryHandle = None
         self._PendingOldLogicHandle = None
         self._initPLCLogic_fn = None
+        self._initPLCLogicState_fn = None
+        self._plcIECTypeSize = lambda t: 0
+        self._getInitState = lambda: 0
+        self._cancelInit = lambda: 1
+        self._getSwapState = lambda: 0
+        self._cancelSwap = lambda: 1
         self._cleanupPLCLogic_fn = None
         self._PLCLogicInitialized = False
         self._PLCLogicRestartPending = False
         self._swap_copy_ops = None  # keep ctypes array alive until next swap/unload
+        self._swap_snapshot = None  # idem, for the init phase snapshot
 
     def _FreePLC(self):
         """
@@ -499,12 +531,13 @@ class PLCObject(object):
         return False
 
     def _InitPLCLogic(self):
-        """Run __init_PLCLogic (config_init__ + __init_debug). Caller ensures no live tree."""
+        """Run __init_PLCLogicState + __init_PLCLogic. Caller ensures no live tree."""
         init = getattr(self, "_initPLCLogic_fn", None)
         if init is None:
             return True  # nothing loaded / stub
         self.PLClibraryLock.acquire()
         try:
+            self._initPLCLogicState_fn()
             ret = init(0, None)
         finally:
             self.PLClibraryLock.release()
@@ -1022,21 +1055,57 @@ class PLCObject(object):
             pass
         return False
 
+    def _PLCCyclePeriod(self):
+        """Period of the slowest PLC task in seconds, 1ms if unknown."""
+        try:
+            return (ctypes.c_ulonglong.in_dll(
+                        self.PLClibraryHandle, "common_ticktime__").value
+                    * max(1, ctypes.c_ulong.in_dll(
+                        self.PLClibraryHandle, "greatest_tick_count__").value)
+                    / 1e9)
+        except ValueError:
+            return 0.001
+
+    def _WaitPLCThread(self, get_state, cancel):
+        """
+        Wait for the PLC thread to carry out a prepared hot-swap phase.
+
+        A barrier rather than mere reporting: each phase is what makes the next
+        one's inputs valid.  If the PLC thread has not picked the phase up in
+        time, withdraw it so the outcome is unambiguous.
+        """
+        period = self._PLCCyclePeriod()
+        deadline = time() + min(5.0, max(1.0, 3 * period))
+        while get_state() == 1:
+            if time() > deadline:
+                # lost the race only if the PLC thread got to it meanwhile
+                return cancel() == 0
+            sleep(0.01)
+        return True
+
     def _HotSwapPLCLogic(self, new_logic_md5, logic_blob_id):
         """
         Hot-swap the PLC logic .so without stopping the PLC thread.
 
-        1. Write new logic .so to disk.
-        2. Load it; call __init_PLCLogic (config_init__ + __init_debug).
-        3. Reconcile old and new instance trees (streaming two-pointer merge).
-        4. Build a ctypes copy_op_t[] array from matched leaf nodes.
-        5. Hand off to PLC thread via preparePLCLogicSwap (fire-and-forget).
+        1. Write new logic .so to disk and load it.
+        2. Snapshot the running instance tree, then hand off to the PLC thread
+           via preparePLCLogicInit: it saves, runs __init_PLCLogicState
+           (config_init__) and restores in one pass, so the config level globals
+           the running logic shares with the new .so are never observable at
+           their initial values.
+        3. Reconcile old and new instance trees (streaming two-pointer merge)
+           and build the copy ops.  Only possible now: external references are
+           pointers that config_init__ is what fills in.
+        4. Hand off to PLC thread via preparePLCLogicSwap.
+        5. Once committed, run __init_PLCLogicSwapped here: the retain list is
+           built from flags config_init__ sets, so it cannot be built earlier.
         6. Rebind debug/scan symbols from new logic library.
         7. Store old handle for deferred dlclose on next NewPLC call.
         """
         from runtime.plc_hotswap import (scan_lib_instances,
                                          reconcile_instance_trees,
-                                         build_copy_ops_array)
+                                         build_copy_ops_array,
+                                         build_snapshot_ops)
 
         new_logic_fname = new_logic_md5 + lib_ext
         new_logic_path = os.path.join(self.workingdir, new_logic_fname)
@@ -1049,21 +1118,26 @@ class PLCObject(object):
             new_handle = dlopen(new_logic_path)
             new_lib = ctypes.CDLL(new_logic_path, handle=new_handle)
 
-            # Initialize new PLC instance tree and debug state
+            # Library and debug init for the swapped-in logic.  Deferred until
+            # the PLC thread committed the swap: __init_PLCLogicState runs there,
+            # and the retain list it enables can only be built afterwards.
             # Use subscript to avoid Python name mangling of __ prefix
+            _init_swapped_fn = new_lib["__init_PLCLogicSwapped"]
+            _init_swapped_fn.restype = ctypes.c_int
+            _init_swapped_fn.argtypes = []
+
             _init_fn = new_lib["__init_PLCLogic"]
             _init_fn.restype = ctypes.c_int
             _init_fn.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_char_p)]
-            ret = _init_fn(0, None)
-            if ret != 0:
-                dlclose(new_handle)
-                self.LogMessage(0, "Hot-swap: __init_PLCLogic failed (%d)" % ret)
-                return False
+
+            _init_state_fn = new_lib["__init_PLCLogicState"]
+            _init_state_fn.restype = None
+            _init_state_fn.argtypes = []
 
             # Type new scan function for use in scan_lib_instances generator
             new_scan_fn = new_lib.ScanInstances
             new_scan_fn.restype = None
-            new_scan_fn.argtypes = [SCAN_CB_FUNC, ctypes.c_void_p]
+            new_scan_fn.argtypes = [SCAN_CB_FUNC, ctypes.c_void_p, ctypes.c_int]
 
             self._suspendDebug(True)
             self.DebugToken = 0
@@ -1071,21 +1145,54 @@ class PLCObject(object):
             if self._PythonSetPurge is not None:
                 self._PythonSetPurge(1)
 
-            # Build copy-ops by streaming old and new instance trees in parallel.
-            # old_gen uses current self._ScanInstances (old logic, still live).
-            # new_gen uses new logic's ScanInstances directly.
+            def _abort(msg):
+                if self._PythonSetPurge is not None:
+                    self._PythonSetPurge(0)
+                dlclose(new_handle)
+                self.LogMessage(0, "Hot-swap: " + msg)
+                return False
+
+            def _addr(arr, count):
+                return ctypes.cast(arr, ctypes.c_void_p).value if count else None
+
+            # --- Phase 1: initialize the new instance tree, on the PLC thread,
+            # bracketed by a snapshot of the running one.
+            # Configuration globals only: those are the ones shared with the
+            # IOs .so, so the reset is what they have to be carried across.
+            snapshot = build_snapshot_ops(self.PLCScan(config_only=True),
+                                          self._plcIECTypeSize)
+            self._swap_snapshot = snapshot
+
+            _prepareInit = self.PLClibraryHandle.preparePLCLogicInit
+            _prepareInit.restype = ctypes.c_int
+            _prepareInit.argtypes = [
+                ctypes.c_void_p,  # handle (dlopen result)
+                ctypes.c_void_p,  # copy_op_t *save_ops
+                ctypes.c_size_t,  # save count
+                ctypes.c_void_p,  # copy_op_t *restore_ops
+                ctypes.c_size_t,  # restore count
+            ]
+            if _prepareInit(new_handle,
+                            _addr(snapshot.save, snapshot.count), snapshot.count,
+                            _addr(snapshot.restore, snapshot.count), snapshot.count) != 0:
+                return _abort("new logic .so is missing __init_PLCLogicState")
+
+            if not self._WaitPLCThread(self._getInitState, self._cancelInit):
+                return _abort("PLC thread did not initialize the new logic")
+
+            # --- Phase 2: build copy-ops by streaming old and new instance trees
+            # in parallel.  old_gen uses current self._ScanInstances (old logic,
+            # still live); new_gen uses the new logic's ScanInstances, valid now
+            # that its tree is initialized.
             c_ops, ops_count = build_copy_ops_array(
                 reconcile_instance_trees(
                     self.PLCScan(),
                     scan_lib_instances(new_scan_fn)))
 
-            ops_addr = ctypes.cast(c_ops, ctypes.c_void_p).value if ops_count else None
-
-            # Fire-and-forget: hand off to PLC thread.
-            # The C side resolves plc_logic_cycle / ScanInstances / GetRetainSize
-            # from new_handle itself — no pre-resolved pointers needed here.
-            # The PLC thread will execute copy ops and switch fn pointers on its
-            # next cycle boundary (best-effort, no pause).
+            # Hand off to PLC thread.  The C side resolves plc_logic_cycle /
+            # ScanInstances / GetRetainSize from new_handle itself — no
+            # pre-resolved pointers needed here.  The PLC thread will execute
+            # copy ops and switch fn pointers on its next cycle boundary.
             _prepareSwap = self.PLClibraryHandle.preparePLCLogicSwap
             _prepareSwap.restype = ctypes.c_int
             _prepareSwap.argtypes = [
@@ -1093,7 +1200,18 @@ class PLCObject(object):
                 ctypes.c_void_p,  # copy_op_t *ops
                 ctypes.c_size_t,  # count
             ]
-            _prepareSwap(new_handle, ops_addr, ops_count)
+            if _prepareSwap(new_handle, _addr(c_ops, ops_count), ops_count) != 0:
+                return _abort("new logic .so is missing symbols")
+
+            if not self._WaitPLCThread(self._getSwapState, self._cancelSwap):
+                return _abort("PLC thread did not commit the swap")
+
+            # New logic is live now: finish its initialization.  A failure here
+            # means retain setup failed, which is not something the swap can be
+            # rolled back from, so report it and carry on.
+            ret = _init_swapped_fn()
+            if ret != 0:
+                self.LogMessage(0, "Hot-swap: __init_PLCLogicSwapped failed (%d)" % ret)
 
             # Keep ctypes array alive until next swap/unload (PLC thread still references it)
             self._swap_copy_ops = c_ops
@@ -1122,6 +1240,7 @@ class PLCObject(object):
 
                 self._ScanInstances = new_scan_fn
 
+                self._initPLCLogicState_fn = _init_state_fn
                 self._initPLCLogic_fn = _init_fn
                 self._cleanupPLCLogic_fn = new_lib["__cleanup_PLCLogic"]
                 self._cleanupPLCLogic_fn.restype = None
@@ -1255,12 +1374,14 @@ class PLCObject(object):
     def GetVersions(self):
         return platform_module.system() + " " + platform_module.release()
 
-    def PLCScan(self):
+    def PLCScan(self, config_only=False):
         """Walk PLC instance tree, yielding for every node.
 
         Yields (path, type_enum_value, type_category, count) tuples.
         The C scan runs in a background thread; each callback blocks
         until the generator consumer requests the next item.
+
+        config_only restricts the walk to configuration domain globals.
         """
         item_ready = Event()
         item_consumed = Event()
@@ -1304,7 +1425,7 @@ class PLCObject(object):
 
         def run_scan():
             nonlocal done
-            self._ScanInstances(scan_callback, None)
+            self._ScanInstances(scan_callback, None, 1 if config_only else 0)
             done = True
             item_ready.set()
 

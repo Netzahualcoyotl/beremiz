@@ -1178,12 +1178,12 @@ class ProjectController(ConfigTreeNode, PLCControler):
         pd = self._POUSData
 
         instances_c = list(pd.instances_c)
-        # each entry: (path, flat_count, base_type,
-        #              c_name, c_type, recurse_fn, needs_deref)
+        # each entry: (path, flat_count, base_type, type_class,
+        #              c_name, c_type, recurse_fn, needs_deref, is_config)
 
         extern_lines = [
             "extern %s %s;" % (c_type, c_name)
-            for _p, _fc, _bt, _tc, c_name, c_type, _r, _nd in instances_c
+            for _p, _fc, _bt, _tc, c_name, c_type, _r, _nd, _ic in instances_c
         ]
 
         resolve_lines = self._gen_resolve_function(instances_c)
@@ -1212,7 +1212,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
         ]
         cumulated = 0
         for (path, flat_count, base_type, _type_class,
-             c_name, _c_type, recurse_fn, needs_deref) in instances_c:
+             c_name, _c_type, recurse_fn, needs_deref, _is_config) in instances_c:
             end = cumulated + flat_count
             lines.append("    /* %s  [%d..%d) */" % (path, cumulated, end))
             lines.append("    if (idx < %du) {" % end)
@@ -1256,7 +1256,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
             "    unsigned int cum;",
         ]
         for (path, flat_count, base_type, type_class,
-             c_name, _c_type, recurse_fn, needs_deref) in instances_c:
+             c_name, _c_type, recurse_fn, needs_deref, _is_config) in instances_c:
             lines.append("    /* %s */" % path)
             lines.append("    ctx.retain_until_cum = 0;")
             if recurse_fn is None:
@@ -1303,37 +1303,52 @@ class ProjectController(ConfigTreeNode, PLCControler):
 
     @staticmethod
     def _gen_scan_instances(instances_c):
+        """Generate ScanInstances, the whole instance tree walk used by the debugger.
+
+        config_only restricts the walk to configuration domain globals.  Those
+        are the ones stored in the IOs .so, so every logic .so reaches the same
+        memory through symbol interposition: a hot-swap has to snapshot them
+        around the instance tree reset, and scanning the rest for that would cost
+        a scratch slot per variable in the whole program.  Instances are emitted
+        in declaration order either way, so both trees stream in step.
+        """
         import targets.var_access
         lines = [
-            "void ScanInstances(__scan_callback_t cb, void *userdata)",
+            "void ScanInstances(__scan_callback_t cb, void *userdata, int config_only)",
             "{",
             "    __scan_ctx_t ctx = { cb, userdata };",
             "    unsigned int cum;",
             "    int ret;",
         ]
         for (path, flat_count, base_type, type_class,
-             c_name, _c_type, recurse_fn, needs_deref) in instances_c:
-            lines.append("    /* %s */" % path)
+             c_name, _c_type, recurse_fn, needs_deref, is_config) in instances_c:
             if recurse_fn is None:
                 # Simple leaf: announce to callback
-                lines += [
-                    "    cb(%s_ENUM, &%s, 0, 0, 1,"
+                body = [
+                    "cb(%s_ENUM, &%s, 0, 0, 1,"
                     " \"%s\", userdata);"
                     % (base_type.upper(), c_name, path),
                 ]
             else:
                 data_ptr = ProjectController._data_ptr(c_name, needs_deref)
-                lines += [
-                    "    ret = cb(%s_ENUM, %s, 0, 0, %du,"
+                body = [
+                    "ret = cb(%s_ENUM, %s, 0, 0, %du,"
                     " \"%s\", userdata);"
                     % ("ARRAY" if type_class == targets.var_access.TypeClass.ARRAY else "STRUCT",
                        data_ptr, flat_count, path),
-                    "    if (ret == 1) {",
-                    "        cum = 0;",
-                    "        %s(%s, __scan_cb, &ctx, &cum);"
+                    "if (ret == 1) {",
+                    "    cum = 0;",
+                    "    %s(%s, __scan_cb, &ctx, &cum);"
                     % (recurse_fn, data_ptr),
-                    "    }",
+                    "}",
                 ]
+            lines.append("    /* %s */" % path)
+            if is_config:
+                lines += ["    " + line for line in body]
+            else:
+                lines.append("    if (!config_only) {")
+                lines += ["        " + line for line in body]
+                lines.append("    }")
         lines.append("}")
         return lines
 

@@ -13,6 +13,7 @@
 #ifdef TARGET_DEBUG_AND_RETAIN_DISABLE
 
 int __init_debug    (void){return 0;}
+int __init_retain   (void){return 0;}
 void __cleanup_debug (void){}
 void __retrieve_debug(void){}
 void __publish_debug (void){}
@@ -239,20 +240,15 @@ void Remind(unsigned int offset, unsigned int count, void * p);
 extern int CheckRetainBuffer(void);
 extern int InitRetain(size_t);
 
-int __init_debug(void)
+/*
+ * Retain setup, split out of __init_debug so that it can be called on its own.
+ * __build_retain_list() collects variables by reading the __IEC_RETAIN_FLAG that
+ * config_init__() sets, so it can only run once the instance tree is
+ * initialized.  The hot-swap path calls it on its own for that reason, see
+ * __init_PLCLogicSwapped in plc_logic_main.c.
+ **/
+int __init_retain(void)
 {
-    /* init local static vars */
-#ifndef TARGET_ONLINE_DEBUG_DISABLE
-    trace_buffer_cursor = trace_buffer;
-    trace_list_addvar_cursor = trace_list;
-    trace_list_collect_cursor = trace_list;
-    trace_buffer_state = BUFFER_EMPTY;
-
-    force_buffer_cursor = force_buffer;
-    force_list_addvar_cursor = force_list;
-    force_list_apply_cursor = force_list;
-#endif
-
     __build_retain_list();
 
     int res = InitRetain(retain_total_size);
@@ -273,6 +269,23 @@ int __init_debug(void)
         LogMessage(LOG_WARNING, mstr, sizeof(mstr));
     }
     return 0;
+}
+
+int __init_debug(void)
+{
+    /* init local static vars */
+#ifndef TARGET_ONLINE_DEBUG_DISABLE
+    trace_buffer_cursor = trace_buffer;
+    trace_list_addvar_cursor = trace_list;
+    trace_list_collect_cursor = trace_list;
+    trace_buffer_state = BUFFER_EMPTY;
+
+    force_buffer_cursor = force_buffer;
+    force_list_addvar_cursor = force_list;
+    force_list_apply_cursor = force_list;
+#endif
+
+    return __init_retain();
 }
 
 extern void InitiateDebugTransfer(int tick);

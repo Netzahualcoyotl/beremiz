@@ -185,7 +185,16 @@ class POUSData:
 
     @property
     def instances_c(self):
-        """Yield (path, flat_count, base_type, type_class, c_name, c_type, recurse_fn, needs_deref) for each instance."""
+        """Yield (path, flat_count, base_type, type_class, c_name, c_type, recurse_fn,
+        needs_deref, is_config) for each instance.
+
+        is_config tells configuration domain globals from resource scoped ones.
+        _instance_path() concatenates the domain into the path, which loses that
+        distinction, and generators need it: those globals are the ones stored in
+        the IOs .so (see Generate_global_vars) and therefore shared by every logic
+        .so through symbol interposition.
+        """
+        uc_configname = self.configname.upper()
         for name, domain, base_type, type_class, flat_count in self._instances_raw:
             path = self._instance_path(name, domain)
             # Resolve DERIVED aliases (named array/enum/simple types) to their
@@ -195,7 +204,8 @@ class POUSData:
             concrete = _resolve_base_type(base_type.upper(), self._type_info)
             c_type, c_recurse, needs_deref = self.c_type_and_recurse(concrete)
             c_name = self.iec_path_to_c_name(path)
-            yield (path, flat_count, concrete, type_class, c_name, c_type, c_recurse, needs_deref)
+            yield (path, flat_count, concrete, type_class, c_name, c_type, c_recurse,
+                   needs_deref, domain.upper() == uc_configname)
 
     def count_fb_instances(self, target_types):
         """Count total instances of given FB types, recursively through type tree."""

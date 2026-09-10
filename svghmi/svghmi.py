@@ -194,7 +194,7 @@ class SVGHMILibrary(POULibrary):
 
         extern_variables_declarations = [
             "extern %s %s;" % (c_type, c_name)
-            for _path, _fc, _bt, _tc, c_name, c_type, _r, _nd in pous_data.instances_c
+            for _path, _fc, _bt, _tc, c_name, c_type, _r, _nd, _ic in pous_data.instances_c
         ]
 
         # HMI-tree / settings dependent data (item array, buffers, geometry, tree hash)

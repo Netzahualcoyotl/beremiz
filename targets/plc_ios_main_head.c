@@ -77,7 +77,9 @@ static int init_level = 0;
  * Function pointer types for PLC logic .so interface
  **/
 typedef void (*plc_logic_cycle_fn_t)(unsigned int tick);
-typedef void (*plc_scan_fn_t)(void *cb, void *userdata);
+typedef void (*plc_scan_fn_t)(void *cb, void *userdata, int config_only);
+/* config_init__ wrapper, see __init_PLCLogicState in plc_logic_main.c */
+typedef void (*plc_logic_state_init_fn_t)(void);
 
 /* Currently active logic cycle and scan functions */
 static volatile plc_logic_cycle_fn_t plc_logic_run_fn = NULL;
@@ -127,6 +129,23 @@ static get_retain_size_fn_t swap_get_retain_size = NULL;
 static force_var_fn_t swap_force_var_fn = NULL;
 
 /*
+ * Instance tree init of a logic .so about to be swapped in, first half of the
+ * hot-swap.  Config level globals live in the IOs .so and every logic .so
+ * reaches them through symbol interposition, so __init_PLCLogicState() resets
+ * the ones the running program is still using.  Snapshotting them either side
+ * of that reset in a single PLC thread pass is what keeps it unobservable.
+ * The snapshot covers the whole old instance tree rather than just the shared
+ * globals: telling them apart needs the new tree's addresses, which only exist
+ * once this has run.  Restoring a variable the reset never touched is a no-op.
+ **/
+static _Atomic int init_pending = 0;  /* 0=idle 1=ops ready 2=done */
+static copy_op_t *init_save_ops = NULL;
+static size_t init_save_ops_count = 0;
+static copy_op_t *init_restore_ops = NULL;
+static size_t init_restore_ops_count = 0;
+static plc_logic_state_init_fn_t init_state_fn = NULL;
+
+/*
  * Execute instance state copy ops — called from PLC thread during hot-swap.
  * Uses the same __ANY-based switch pattern as var_access.c UnpackVar().
  *
@@ -168,6 +187,49 @@ static void execute_copy_ops(copy_op_t *ops, size_t count)
             __Copy_case_t(ENUM)
             __Copy_case_p(ENUM)
             default: break;
+        }
+    }
+}
+
+/*
+ * Size of one __IEC_*_t wrapper, so that Python can lay the save buffer out to
+ * fit exactly what it snapshots.  0 for anything not copied by
+ * execute_save_ops, which lets the caller skip it altogether.
+ **/
+#define __Size_case_t(TYPENAME) \
+    case TYPENAME##_ENUM: return sizeof(__IEC_##TYPENAME##_t);
+
+size_t plcIECTypeSize(int type)
+{
+    switch ((__IEC_types_enum)type) {
+        __ANY(__Size_case_t)
+        __Size_case_t(ENUM)
+        default: return 0;
+    }
+}
+
+/*
+ * Snapshot ops — plain wrapper copy, used both ways around __init_PLCLogicState.
+ * Deliberately not execute_copy_ops: that reconstructs force_list entries for
+ * forced variables, which would register the scratch buffer as a forced
+ * variable's address on the way out, and register the running logic's forces a
+ * second time on the way back.  Copying the wrapper whole carries the flags
+ * over as they were, which is all a snapshot round trip needs.
+ **/
+#define __Save_case_t(TYPENAME) \
+    case TYPENAME##_ENUM: \
+        *((__IEC_##TYPENAME##_t *)op->dst) = *((__IEC_##TYPENAME##_t *)op->src); \
+        break;
+
+static void execute_save_ops(copy_op_t *ops, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        copy_op_t *op = &ops[i];
+        switch ((__IEC_types_enum)op->type) {
+            __ANY(__Save_case_t)
+            __Save_case_t(ENUM)
+            default: break;   /* located/output vars: .value is a pointer that
+                               * __init_PLCLogicState() legitimately re-sets */
         }
     }
 }
@@ -262,13 +324,71 @@ int preparePLCLogicSwap(void *handle, copy_op_t *ops, size_t count)
 }
 
 /*
+ * Prepare the init half of a hot-swap.
+ * Resolves __init_PLCLogicState from the new handle (Python main thread — safe)
+ * and hands over the snapshot ops.  The PLC thread runs the three of them back
+ * to back on its next cycle, so the config level globals shared with the
+ * running logic are never observable at their initial values.
+ **/
+int preparePLCLogicInit(void *handle,
+                        copy_op_t *save_ops, size_t save_count,
+                        copy_op_t *restore_ops, size_t restore_count)
+{
+    plc_logic_state_init_fn_t state_init =
+        (plc_logic_state_init_fn_t)dlsym(handle, "__init_PLCLogicState");
+
+    if (!state_init)
+        return -1;
+
+    init_state_fn          = state_init;
+    init_save_ops          = save_ops;
+    init_save_ops_count    = save_count;
+    init_restore_ops       = restore_ops;
+    init_restore_ops_count = restore_count;
+
+    atomic_store(&init_pending, 1);
+    return 0;
+}
+
+int getPLCLogicInitState(void)
+{
+    return atomic_load(&init_pending);
+}
+
+int cancelPLCLogicInit(void)
+{
+    int expected = 1;
+    return atomic_compare_exchange_strong(&init_pending, &expected, 0) ? 1 : 0;
+}
+
+/*
+ * Hot-swap barrier for Python: 1 while the swap is still pending, 2 once the
+ * PLC thread committed it.  PLCObject waits for it to leave 1 before building
+ * the new logic's retain list, which needs the flags __init_PLCLogicState() set.
+ **/
+int getPLCLogicSwapState(void)
+{
+    return atomic_load(&swap_pending);
+}
+
+/*
+ * Withdraw a swap the PLC thread has not picked up yet.
+ * Returns 1 if the swap was cancelled, 0 if it had already been committed.
+ **/
+int cancelPLCLogicSwap(void)
+{
+    int expected = 1;
+    return atomic_compare_exchange_strong(&swap_pending, &expected, 0) ? 1 : 0;
+}
+
+/*
  * ScanInstances proxy — delegates to the currently active logic .so.
  * Called by PLCObject Python code for debug variable inspection.
  **/
-void ScanInstances(void *cb, void *userdata)
+void ScanInstances(void *cb, void *userdata, int config_only)
 {
     plc_scan_fn_t fn = plc_logic_scan_fn;
-    if (fn) fn(cb, userdata);
+    if (fn) fn(cb, userdata, config_only);
 }
 
 /*
@@ -283,6 +403,17 @@ unsigned int PLC_run(unsigned int periods_passed)
 
     if (greatest_tick_count__)
         __tick %%= greatest_tick_count__;
+
+    /* Hot-swap, first half: initialize the instance tree of the logic .so about
+     * to be swapped in, snapshotting the globals it shares with the running one
+     * around that reset.  Plain wrapper copies both ways, so a forced variable
+     * keeps its flags without its force_list entry being registered twice. */
+    if (atomic_load(&init_pending) == 1) {
+        execute_save_ops(init_save_ops, init_save_ops_count);
+        init_state_fn();
+        execute_save_ops(init_restore_ops, init_restore_ops_count);
+        atomic_store(&init_pending, 2);  /* signal Python: tree initialized */
+    }
 
     /* Best-effort hot-swap: check flag set by Python main thread */
     if (atomic_load(&swap_pending) == 1) {

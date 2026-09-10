@@ -21,6 +21,7 @@ void config_init__(void);
  **/
 #ifndef PLC_NO_DEBUG
 int  __init_debug(void);
+int  __init_retain(void);
 void __cleanup_debug(void);
 void __publish_debug(void);
 #endif
@@ -48,17 +49,54 @@ void plc_logic_cycle(unsigned int tick)
 }
 
 /*
- * __init_PLCLogic — initialize PLC logic instance tree, libraries and debug.
- * Called from PLCObject.py (Python main thread) via loadPLCLogic().
+ * __init_PLCLogicState — reset the IEC instance tree to its initial values.
+ * Config level globals are shared with the IOs .so through symbol interposition
+ * (see Generate_global_vars), so this wipes state the running PLC still uses.
+ * On a hot-swap it is therefore called by the PLC thread, inside the same pass
+ * that saves and restores those globals — see PLC_run in plc_ios_main_head.c.
+ **/
+void __init_PLCLogicState(void)
+{
+    config_init__();
+}
+
+/*
+ * __init_PLCLogic — initialize PLC logic libraries and debug.
+ * Called from PLCObject.py (Python main thread) via loadPLCLogic(), after
+ * __init_PLCLogicState().
  **/
 int __init_PLCLogic(int argc, char **argv)
 {
     int res = 0;
-    config_init__();
     %(logic_init_calls)s
 #ifndef PLC_NO_DEBUG
     if(res == 0)
         res = __init_debug();
+#endif
+    return res;
+}
+
+/*
+ * __init_PLCLogicSwapped — same, for a logic .so swapped in while running.
+ * Called from PLCObject.py once the PLC thread committed the swap, since the
+ * retain list is built from flags __init_PLCLogicState() sets.  Unlike
+ * __init_debug() it leaves the trace and force cursors alone: they still hold
+ * their load time values in a freshly loaded .so, and resetting them would
+ * discard the force list the swap pass just reconstructed.
+ *
+ * This runs once the swapped-in logic is already cycling, so __build_retain_list
+ * fills retain_list while __publish_debug walks it.  That is only safe because
+ * retain_list_count is assigned last, after every entry (see the generator in
+ * ProjectController.Generate_plc_debugger): the PLC thread sees either none of
+ * the list or all of it.
+ **/
+int __init_PLCLogicSwapped(void)
+{
+    int res = 0;
+    %(logic_init_calls)s
+#ifndef PLC_NO_DEBUG
+    if(res == 0)
+        res = __init_retain();
 #endif
     return res;
 }

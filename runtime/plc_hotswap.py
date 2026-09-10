@@ -15,6 +15,7 @@ copy operations that the PLC thread executes at the next cycle boundary.
 """
 
 import ctypes
+from collections import namedtuple
 from threading import Thread, Event
 
 from runtime.typemapping import IEC_types_enum
@@ -40,11 +41,13 @@ class CopyOp(ctypes.Structure):
     ]
 
 
-def scan_lib_instances(scan_fn):
+def scan_lib_instances(scan_fn, config_only=False):
     """Walk a logic library's instance tree via its ScanInstances function.
 
-    scan_fn: ctypes function with signature ScanInstances(cb, userdata) — e.g.
-             new_lib.ScanInstances (already typed as SCAN_CB_FUNC, c_void_p).
+    scan_fn: ctypes function with signature ScanInstances(cb, userdata,
+             config_only) — e.g. new_lib.ScanInstances (already typed as
+             SCAN_CB_FUNC, c_void_p, c_int).
+    config_only: restrict the walk to configuration domain globals.
 
     Yields tuples identical to PLCObject.PLCScan():
         (path, type_category, type_enum_value, ptr,
@@ -89,7 +92,7 @@ def scan_lib_instances(scan_fn):
         return 0 if abort[0] else 1
 
     def run_scan():
-        scan_fn(scan_callback, None)
+        scan_fn(scan_callback, None, 1 if config_only else 0)
         done[0] = True
         item_ready.set()
 
@@ -171,6 +174,9 @@ def reconcile_instance_trees(old_gen, new_gen):
         # else: new_node has no matching old node → left at config_init__() defaults
 
 
+SnapshotOps = namedtuple("SnapshotOps", ["save", "restore", "count", "buffer"])
+
+
 def build_copy_ops_array(ops_gen):
     """Build a ctypes CopyOp array from a generator of (type_enum, src, dst) triples.
 
@@ -187,3 +193,61 @@ def build_copy_ops_array(ops_gen):
         arr[i].src  = src
         arr[i].dst  = dst
     return arr, count
+
+
+def build_snapshot_ops(scan_gen, type_size):
+    """Build the ops that carry configuration globals across __init_PLCLogicState().
+
+    Those globals are stored in the IOs .so and every logic .so reaches them
+    through symbol interposition, so initializing the tree of a logic .so about
+    to be swapped in resets the ones the running program still uses.  The PLC
+    thread saves them into a scratch buffer and restores them right after, in one
+    pass, so the reset is never observable.
+
+    scan_gen is expected to be a configuration-domain-only scan: resource scoped
+    instances live in the logic .so alone and are carried over by the copy ops
+    instead, so snapshotting them would cost a scratch slot each for nothing.
+
+    type_size maps an __IEC_types_enum value to the size of its wrapper, 0 for
+    the ones execute_save_ops does not copy (located and output variables, whose
+    .value is a pointer the reset legitimately re-fills).  A first pass lays the
+    buffer out from those sizes, so it holds exactly what is snapshotted.
+
+    Returns a SnapshotOps, whose arrays and buffer must be kept alive until the
+    PLC thread has consumed them.
+    """
+    CONTAINERS = {IEC_types_enum.ARRAY, IEC_types_enum.STRUCT}
+
+    # First pass: keep the leaves worth saving and lay out their slots.  Offsets
+    # are 8 byte aligned, which satisfies the alignment of every IEC wrapper.
+    sizes = {}
+    slots = []
+    total = 0
+    for item in scan_gen:
+        type_enum, ptr = item[2], item[3]
+        if item[1] in CONTAINERS or not ptr:
+            continue
+        size = sizes.get(type_enum)
+        if size is None:
+            size = sizes[type_enum] = type_size(type_enum)
+        if size == 0:
+            continue
+        slots.append((type_enum, ptr, total))
+        total += (size + 7) & ~7
+
+    count = len(slots)
+    if count == 0:
+        return SnapshotOps(None, None, 0, None)
+
+    buffer = (ctypes.c_uint64 * (total // 8))()
+    base = ctypes.addressof(buffer)
+
+    save = (CopyOp * count)()
+    restore = (CopyOp * count)()
+    for i, (type_enum, addr, offset) in enumerate(slots):
+        slot = base + offset
+        save[i].type = restore[i].type = type_enum
+        save[i].src,    save[i].dst    = addr, slot
+        restore[i].src, restore[i].dst = slot, addr
+
+    return SnapshotOps(save, restore, count, buffer)
