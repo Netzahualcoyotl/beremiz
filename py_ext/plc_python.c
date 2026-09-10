@@ -68,9 +68,8 @@ void __cleanup_py_ext()
 
 void __retrieve_py_ext()
 {
-	/* A FB may have queued a request after last cycle's __publish_py_ext — the
-	 * python_eval instances py_ext creates itself run from a later publish
-	 * hook — so carry its wakeup request over instead of dropping it here. */
+	/* Defensive: an enqueue outside a retrieve/publish window would otherwise
+	 * lose its wakeup here, PythonState being rewritten wholesale below. */
 	int mustwakeup = PythonState & PYTHON_MUSTWAKEUP;
 	/* Check Python thread is not being
 	 * modifying internal python_eval data */

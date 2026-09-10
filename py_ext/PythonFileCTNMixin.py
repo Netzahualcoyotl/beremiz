@@ -360,6 +360,11 @@ IEC_%(IECtype)s __%(name)s_onchange_lastval;
 #include "GLOBALS.h"
 #include "beremiz.h"
 
+/* py_ext runtime — py_ext.c, linked into the same IOs binary */
+extern void __PythonEvalFB(int, PYTHON_EVAL_data__*);
+extern void __retrieve_py_ext(void);
+extern void __publish_py_ext(void);
+
 PYTHON_POLL_data__* __%(location_str)s_notifier;
 
 /* User variables reference */
@@ -388,8 +393,14 @@ void __publish_%(location_str)s(void){
     passing_changes_to_python |= some_change_found;
     // call python part if there was at least a change
     if(passing_changes_to_python){
-        __PythonEvalFB(1,__%(location_str)s_notifier);
+        /* python_eval state and the eval fifo are protected by the python mutex.
+         * Libraries publish before confnodes, so __publish_py_ext already
+         * released it — take it again for the duration of this call. Failing to
+         * get it just skips this cycle, passing_changes_to_python stays set. */
+        __retrieve_py_ext();
+        __PythonEvalFB(1,(PYTHON_EVAL_data__*)(void*)__%(location_str)s_notifier);
         passing_changes_to_python &= !(__GET_VAR(__%(location_str)s_notifier->ACK,));
+        __publish_py_ext();
     }
 }
 
