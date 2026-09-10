@@ -15,6 +15,9 @@
 #     Hot-swap fires: PLCObject sees same IOs MD5, new logic MD5.
 #  8. Verify "Hot-swap: logic updated" appears in new CLI log — swap happened
 #     without stopping the PLC.
+#  9. Verify the new logic runs, and that py_ext change notification still
+#     works: its notifier FB is an IEC global, so it goes through the same
+#     re-init as the rest of the instance tree.
 #
 # Detection strategy:
 #  - "Python extensions started" in v1 CLI log → PLC is up with Python ext
@@ -31,7 +34,7 @@ RUNTIME_PORT=$(( RANDOM % 1000 + 61131 ))
 RUNTIME_TMPDIR=$(mktemp -d)
 TEST_TMPDIR=$(mktemp -d)
 
-rm -f ./PLC_OK ./PLC_CONNECTED
+rm -f ./PLC_OK ./PLC_CONNECTED ./PLC_NOTIFY
 
 cleanup() {
     # Kill CLI coproc session if still alive.  Guard against 0: "pkill -s 0"
@@ -62,6 +65,13 @@ $BEREMIZPYTHONPATH $BEREMIZPATH/Beremiz_service.py -p "$RUNTIME_PORT" -i 127.0.0
             echo "PLC was re-programmed"
             touch ./PLC_OK
         fi
+        # py_ext change notification: On_py_ext_0_Change() reports which
+        # published variables changed.  A hot-swap re-inits the IEC globals,
+        # the notifier FB included, so this is what tells us its polling
+        # inputs survived.
+        if [[ "$line" == *"('SomeVarName',)"* ]]; then
+            touch ./PLC_NOTIFY
+        fi
     done
     echo "End PLC loop"
 ) &
@@ -78,6 +88,10 @@ while ((c--)); do
         sleep 1
     fi
 done
+if ((res != 0)); then
+    echo "FAILED: runtime did not come up"
+    exit $res
+fi
 
 # --- Step 2: Prepare two project copies ---
 BUILD_DIR="$TEST_TMPDIR/build"
@@ -159,7 +173,7 @@ fi
 echo ">>> HOT-SWAP SUCCESS: PLC logic swapped without restart."
 
 # --- Step 7: Verify the new logic runs — "Hot-swap works" must appear in runtime output ---
-echo wait for runtime to come up
+echo wait for new logic output
 res=110  # default to ETIMEDOUT
 c=30
 while ((c--)); do
@@ -171,5 +185,30 @@ while ((c--)); do
         sleep 1
     fi
 done
+if ((res != 0)); then
+    echo "FAILED: new logic produced no output after hot-swap"
+    exit $res
+fi
+
+# --- Step 8: Verify py_ext change notification survived the swap ---
+# The notifier FB is an IEC global, so it is re-initialized along with the
+# instance tree of the logic being swapped in.  Discard what was seen before
+# the swap and wait for a fresh notification.
+rm -f ./PLC_NOTIFY
+echo wait for change notification
+res=110  # default to ETIMEDOUT
+c=30
+while ((c--)); do
+    if [[ -a ./PLC_NOTIFY ]]; then
+        res=0  # OK success
+        echo ">>> NOTIFIER VERIFIED: change notification still running after hot-swap."
+        break
+    else
+        sleep 1
+    fi
+done
+if ((res != 0)); then
+    echo "FAILED: no change notification after hot-swap"
+fi
 
 exit $res
