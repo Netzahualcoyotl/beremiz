@@ -34,12 +34,16 @@ TEST_TMPDIR=$(mktemp -d)
 rm -f ./PLC_OK ./PLC_CONNECTED
 
 cleanup() {
-    # Kill CLI coproc session if still alive
-    pkill -9 -s "${CLI_PID:-0}" 2>/dev/null || true
-    # Kill the runtime coproc session
-    pkill "${RUNTIME_PID:-0}" 2>/dev/null || true
-    # Kill background runtime-drain process
-    kill "${DRAIN_PID:-0}" 2>/dev/null || true
+    # Kill CLI coproc session if still alive.  Guard against 0: "pkill -s 0"
+    # would target our own session, and "kill 0" our own process group.
+    if [[ "${CLI_PID:-0}" -gt 0 ]]; then
+        pkill -9 -s "$CLI_PID" 2>/dev/null || true
+    fi
+    # Kill the runtime.  The process substitution draining its output ends on
+    # EOF, so it needs no separate kill.
+    if [[ "${RUNTIME_PID:-0}" -gt 0 ]]; then
+        kill "$RUNTIME_PID" 2>/dev/null || true
+    fi
     rm -rf "$RUNTIME_TMPDIR" "$TEST_TMPDIR"
 }
 trap cleanup EXIT
