@@ -444,6 +444,7 @@ class PLCObject(object):
         self._suspendDebug = lambda x: -1
         self._resumeDebug = lambda: None
         self._PythonIterator = lambda *a: ""
+        self._PythonSetPurge = None
         self._ScanInstances = lambda cb, ud: None
         self._GetLogCount = None
         self._LogMessage = None
@@ -1079,11 +1080,6 @@ class PLCObject(object):
                     scan_lib_instances(new_scan_fn)))
 
             ops_addr = ctypes.cast(c_ops, ctypes.c_void_p).value if ops_count else None
-
-            if self._PythonSetPurge is not None:
-                idle_event = Event()
-                self.python_runtime_vars["OnIdle"].append(idle_event.set)
-                idle_event.wait(timeout=0.5)
 
             # Fire-and-forget: hand off to PLC thread.
             # The C side resolves plc_logic_cycle / ScanInstances / GetRetainSize

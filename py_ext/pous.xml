@@ -2872,6 +2872,14 @@
                 <BOOL/>
               </type>
             </variable>
+            <variable name="SLOT">
+              <type>
+                <DINT/>
+              </type>
+              <documentation>
+                <xhtml:p><![CDATA[Index of this instance's entry in the eval fifo, while a request is in flight. A logic hot-swap stores ~index instead, until the instance the PLC runs claims that entry back.]]></xhtml:p>
+              </documentation>
+            </variable>
           </localVars>
         </interface>
         <body>
@@ -2931,6 +2939,14 @@
               <type>
                 <BOOL/>
               </type>
+            </variable>
+            <variable name="SLOT">
+              <type>
+                <DINT/>
+              </type>
+              <documentation>
+                <xhtml:p><![CDATA[Index of this instance's entry in the eval fifo, while a request is in flight. A logic hot-swap stores ~index instead, until the instance the PLC runs claims that entry back.]]></xhtml:p>
+              </documentation>
             </variable>
           </localVars>
         </interface>
