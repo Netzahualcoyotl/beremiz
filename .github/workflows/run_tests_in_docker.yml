@@ -19,7 +19,7 @@ jobs:
     - uses: actions/checkout@v3
       with:
           repository: beremiz/matiec
-          ref: 79410c7660cf337ec7991a167e53ef141a26caf9
+          ref: 3a41303bcb4e50403417bc39c63f88981d7d961e
           path: matiec
 
     - uses: actions/checkout@v3
