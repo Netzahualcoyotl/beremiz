@@ -162,7 +162,7 @@ class POUSData:
 
     def _instance_path(self, name, domain):
         """Construct instance path from name and domain."""
-        if domain == self.configname:
+        if domain.upper() == self.configname.upper():
             return domain + '.' + name
         else:
             return self.configname + '.' + domain + '.' + name
