@@ -9,6 +9,13 @@ class TypeClass(IntEnum):
     ENUM = 4
     DERIVED = 5
     SIMPLE = 6
+    LOCATED = 7
+    LOCATED_ARRAY = 8
+    LOCATED_STRUCT = 9
+
+# Instance classes of located global variables, whose C storage is a __IEC_*_p
+# pointing to their location instead of a __IEC_*_t holding their value.
+LOCATED_CLASSES = (TypeClass.LOCATED, TypeClass.LOCATED_ARRAY, TypeClass.LOCATED_STRUCT)
 
 def _parse_path(path_str):
     """Parse 'A.B[1].C[2][3]' into [('A',[]), ('B',[1]), ('C',[2,3])]."""
@@ -178,7 +185,7 @@ class POUSData:
             # otherwise dims and element indexing look up the alias which has none.
             concrete = _resolve_base_type(base_type.upper(), self._type_info)
             dims = self._type_info.get(concrete, (None, None))[1] \
-                if type_class == TypeClass.ARRAY else ()
+                if type_class in (TypeClass.ARRAY, TypeClass.LOCATED_ARRAY) else ()
             self._inst_by_path[path] = (cumulated, flat_count, dims, concrete)
             cumulated += flat_count
         self._total_flat_count = cumulated
@@ -202,7 +209,8 @@ class POUSData:
             # native type: named arrays get a proper __recurse (not a bogus
             # <ALIAS>_ENUM scalar tag), and enums map to their storage type.
             concrete = _resolve_base_type(base_type.upper(), self._type_info)
-            c_type, c_recurse, needs_deref = self.c_type_and_recurse(concrete)
+            c_type, c_recurse, needs_deref = self.c_type_and_recurse(
+                concrete, type_class in LOCATED_CLASSES)
             c_name = self.iec_path_to_c_name(path)
             yield (path, flat_count, concrete, type_class, c_name, c_type, c_recurse,
                    needs_deref, domain.upper() == uc_configname)
@@ -289,15 +297,16 @@ class POUSData:
         else:
             return '__'.join(p.upper() for p in parts[1:])
 
-    def c_type_and_recurse(self, base_type):
+    def c_type_and_recurse(self, base_type, located=False):
         """Return (c_extern_type, c_recurse_fn, needs_value_deref) for a type."""
         uc = base_type.upper()
         tc = self._type_classes.get(uc)
+        wrapper = '__IEC_' + uc + ('_p' if located else '_t')
 
         if tc is not None:
             if tc in (TypeClass.STRUCT, TypeClass.ARRAY):
                 return (
-                    '__IEC_' + uc + '_t',
+                    wrapper,
                     uc + '__recurse',
                     True
                 )
@@ -308,4 +317,4 @@ class POUSData:
                     False
                 )
 
-        return ('__IEC_' + uc + '_t', None, False)
+        return (wrapper, None, False)

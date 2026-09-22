@@ -1200,8 +1200,17 @@ class ProjectController(ConfigTreeNode, PLCControler):
         }
 
     @staticmethod
-    def _data_ptr(c_name, needs_deref):
-        return "&(%s.value)" % c_name if needs_deref else "&%s" % c_name
+    def _data_ptr(c_name, needs_deref, type_class):
+        if needs_deref:
+            # located globals .value already points to their location
+            return ("%s.value" if type_class in targets.var_access.LOCATED_CLASSES
+                    else "&(%s.value)") % c_name
+        return "&%s" % c_name
+
+    @staticmethod
+    def _leaf_enum(base_type, type_class):
+        return base_type.upper() + (
+            "_P_ENUM" if type_class in targets.var_access.LOCATED_CLASSES else "_ENUM")
 
     @staticmethod
     def _gen_resolve_function(instances_c):
@@ -1211,7 +1220,7 @@ class ProjectController(ConfigTreeNode, PLCControler):
             "{",
         ]
         cumulated = 0
-        for (path, flat_count, base_type, _type_class,
+        for (path, flat_count, base_type, type_class,
              c_name, _c_type, recurse_fn, needs_deref, _is_config) in instances_c:
             end = cumulated + flat_count
             lines.append("    /* %s  [%d..%d) */" % (path, cumulated, end))
@@ -1220,11 +1229,12 @@ class ProjectController(ConfigTreeNode, PLCControler):
             if recurse_fn is None:
                 lines += [
                     "        out->ptr = &%s;" % c_name,
-                    "        out->type = %s_ENUM;" % base_type.upper(),
+                    "        out->type = %s;"
+                    % ProjectController._leaf_enum(base_type, type_class),
                     "        return 0;",
                 ]
             else:
-                data_ptr = ProjectController._data_ptr(c_name, needs_deref)
+                data_ptr = ProjectController._data_ptr(c_name, needs_deref, type_class)
                 lines += [
                     "        __resolve_ctx_t ctx = "
                     "{idx - %du, NULL, UNKNOWN_ENUM};" % cumulated,
@@ -1263,9 +1273,9 @@ class ProjectController(ConfigTreeNode, PLCControler):
                 # Simple leaf: cb's leaf branch reads wrapper flags via
                 # UnpackVar and collects if retain-flagged.
                 lines.append(
-                    "    __retain_check_flags_cb(%s_ENUM, &%s, 0, 0, 1,"
+                    "    __retain_check_flags_cb(%s, &%s, 0, 0, 1,"
                     " \"%s\", &ctx);"
-                    % (base_type.upper(), c_name, path)
+                    % (ProjectController._leaf_enum(base_type, type_class), c_name, path)
                 )
             elif needs_deref:
                 # Wrapped complex (struct/array): announce the wrapper
@@ -1274,16 +1284,18 @@ class ProjectController(ConfigTreeNode, PLCControler):
                 # leaves (which will be either kept by the override or
                 # filtered by their own flags).
                 wrapper_enum = ("ARRAY"
-                    if type_class == targets.var_access.TypeClass.ARRAY
+                    if type_class in (targets.var_access.TypeClass.ARRAY,
+                                      targets.var_access.TypeClass.LOCATED_ARRAY)
                     else "STRUCT")
                 lines += [
                     "    __retain_check_flags_cb(%s_ENUM, &%s, 0, 0, %du,"
                     " \"%s\", &ctx);"
                     % (wrapper_enum, c_name, flat_count, path),
                     "    cum = 0;",
-                    "    %s(&(%s.value),"
+                    "    %s(%s,"
                     " __retain_check_flags_cb, &ctx, &cum);"
-                    % (recurse_fn, c_name),
+                    % (recurse_fn,
+                       ProjectController._data_ptr(c_name, needs_deref, type_class)),
                 ]
             else:
                 # FB/program: no top-level wrapper flag — recurse and
@@ -1325,16 +1337,18 @@ class ProjectController(ConfigTreeNode, PLCControler):
             if recurse_fn is None:
                 # Simple leaf: announce to callback
                 body = [
-                    "cb(%s_ENUM, &%s, 0, 0, 1,"
+                    "cb(%s, &%s, 0, 0, 1,"
                     " \"%s\", userdata);"
-                    % (base_type.upper(), c_name, path),
+                    % (ProjectController._leaf_enum(base_type, type_class), c_name, path),
                 ]
             else:
-                data_ptr = ProjectController._data_ptr(c_name, needs_deref)
+                data_ptr = ProjectController._data_ptr(c_name, needs_deref, type_class)
                 body = [
                     "ret = cb(%s_ENUM, %s, 0, 0, %du,"
                     " \"%s\", userdata);"
-                    % ("ARRAY" if type_class == targets.var_access.TypeClass.ARRAY else "STRUCT",
+                    % ("ARRAY" if type_class in (targets.var_access.TypeClass.ARRAY,
+                                                 targets.var_access.TypeClass.LOCATED_ARRAY)
+                       else "STRUCT",
                        data_ptr, flat_count, path),
                     "if (ret == 1) {",
                     "    cum = 0;",
@@ -1494,6 +1508,15 @@ class ProjectController(ConfigTreeNode, PLCControler):
             elif type_class == TypeClass.STRUCT:
                 lines.append(
                     "__DECLARE_GLOBAL_STRUCT(%s,%s,%s)" % (uc_type, uc_domain, uc_name))
+            elif type_class == TypeClass.LOCATED:
+                lines.append(
+                    "__DECLARE_GLOBAL_LOCATED(%s,%s,%s)" % (uc_type, uc_domain, uc_name))
+            elif type_class == TypeClass.LOCATED_ARRAY:
+                lines.append(
+                    "__DECLARE_GLOBAL_LOCATED_ARRAY(%s,%s,%s)" % (uc_type, uc_domain, uc_name))
+            elif type_class == TypeClass.LOCATED_STRUCT:
+                lines.append(
+                    "__DECLARE_GLOBAL_LOCATED_STRUCT(%s,%s,%s)" % (uc_type, uc_domain, uc_name))
             else:
                 lines.append(
                     "__DECLARE_GLOBAL(%s,%s,%s)" % (uc_type, uc_domain, uc_name))
