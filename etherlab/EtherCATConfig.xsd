@@ -102,6 +102,27 @@
 															<xs:documentation>Name of  the slave device. </xs:documentation>
 														</xs:annotation>
 													</xs:element>
+													<xs:element name="IEC_Channel" type="xs:int">
+                                                        <xs:annotation>
+                                                            <xs:documentation>
+                                                                Logical Beremiz IEC channel identifying this slave configuration.
+                                                            </xs:documentation>
+                                                        </xs:annotation>
+                                                    </xs:element>
+
+                                                    <xs:element name="AddressMode" minOccurs="0" default="Position">
+                                                        <xs:annotation>
+                                                            <xs:documentation>
+                                                                EtherCAT addressing mode: Position or Alias.
+                                                            </xs:documentation>
+                                                        </xs:annotation>
+                                                        <xs:simpleType>
+                                                            <xs:restriction base="xs:NMTOKEN">
+                                                                <xs:enumeration value="Position"/>
+                                                                <xs:enumeration value="Alias"/>
+                                                            </xs:restriction>
+                                                        </xs:simpleType>
+                                                    </xs:element>
 													<xs:sequence minOccurs="0">
 														<xs:annotation>
 															<xs:documentation>Slave device has EtherCAT Slave Controller</xs:documentation>
@@ -111,6 +132,11 @@
 																<xs:documentation>Fixed EtherCAT address of the slave device.</xs:documentation>
 															</xs:annotation>
 														</xs:element>
+														<xs:element name="Alias" type="xs:int" minOccurs="0" default="0">
+                                                            <xs:annotation>
+                                                                <xs:documentation>EtherCAT alias address of the slave device.</xs:documentation>
+                                                            </xs:annotation>
+                                                        </xs:element>
 														<xs:element name="AutoIncAddr" type="xs:int">
 															<xs:annotation>
 																<xs:documentation>Auto Increment address of the slave device.</xs:documentation>

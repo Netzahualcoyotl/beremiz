@@ -242,7 +242,6 @@ void __publish_%(location)s()
 	}
 #undef FSA_sep 
 
-
 %(modeofop_homing_method)s
 
 	*(AxsPub.ControlWord) = CW;

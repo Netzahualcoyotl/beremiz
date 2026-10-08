@@ -776,11 +776,11 @@ class _CommonSlave(object):
                 elif eeprom_element["name"] == "BootStrap":
                     bootstrap_data = "{:0>16x}".format(eeprom_element)
                     # get bootstrap configuration; <Device>-<Eeprom>-<BootStrap>
-                    for cfg, iter in [("mailbox_bootstrapconf_outstart", 0),
+                    for cfg, index in [("mailbox_bootstrapconf_outstart", 0),
                                       ("mailbox_bootstrapconf_outlength", 1),
                                       ("mailbox_bootstrapconf_instart", 2),
                                       ("mailbox_bootstrapconf_inlength", 3)]:
-                        smartview_infos[cfg] = str(int(bootstrap_data[4*iter+2:4*(iter+1)]+bootstrap_data[4*iter:4*iter+2], 16))
+                        smartview_infos[cfg] = str(int(bootstrap_data[4*index+2:4*(index+1)]+bootstrap_data[4*index:4*index+2], 16))
 
             # get protocol (profile) types supported by mailbox; <Device>-<Mailbox>
             mb = device.getMailbox()

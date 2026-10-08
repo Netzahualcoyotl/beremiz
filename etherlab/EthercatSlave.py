@@ -15,7 +15,7 @@ from plcopen.types_enums import LOCATION_CONFNODE, LOCATION_VAR_INPUT, LOCATION_
 from ConfigTreeNode import ConfigTreeNode
 
 from etherlab.ConfigEditor import NodeEditor
-
+import wx
 # ------------------------------------------
 from etherlab.CommonEtherCATFunction import _CommonSlave
 # ------------------------------------------
@@ -125,17 +125,31 @@ class _EthercatSlaveCTN(object):
         return TYPECONVERSION.get(self.GetCTRoot().GetBaseType(type), None)
 
     def GetSlavePos(self):
-        return self.BaseParams.getIEC_Channel()
+        iec_channel = self.BaseParams.getIEC_Channel()
+        slave = self.CTNParent.GetSlaveByIECChannel(iec_channel)
+
+        if slave is not None:
+            phys_addr = slave.getInfo().getPhysAddr()
+            if phys_addr is not None:
+                return phys_addr
+
+        # Fallback for old configurations without IEC_Channel in
+        # the EtherCAT network configuration.
+        return iec_channel
 
     def GetParamsAttributes(self, path=None):
         if path:
             parts = path.split(".", 1)
+
             if self.MandatoryParams and parts[0] == self.MandatoryParams[0]:
                 return self.MandatoryParams[1].getElementInfos(parts[0], parts[1])
+
             elif self.CTNParams and parts[0] == self.CTNParams[0]:
                 return self.CTNParams[1].getElementInfos(parts[0], parts[1])
+
         else:
             params = []
+
             if self.CTNParams:
                 params.append(self.CTNParams[1].getElementInfos(self.CTNParams[0]))
             else:
@@ -149,6 +163,7 @@ class _EthercatSlaveCTN(object):
                 })
 
             slave_type = self.CTNParent.GetSlaveType(self.GetSlavePos())
+
             params[0]['children'].insert(
                 0,
                 {
@@ -158,31 +173,202 @@ class _EthercatSlaveCTN(object):
                     'value': (slave_type["device_type"], slave_type),
                     'doc': [{"documentation": "EtherCAT slave type"}]
                 })
+
+            # EtherCAT addressing information is stored in the
+            # Master network configuration.
+            slave = self.CTNParent.GetSlaveByIECChannel(
+                self.BaseParams.getIEC_Channel())
+
+            alias = 0
+            address_mode = "Position"
+
+            if slave is not None:
+                slave_info = slave.getInfo()
+
+                alias = slave_info.getAlias()
+                if alias is None:
+                    alias = 0
+
+                address_mode = slave_info.getAddressMode() or "Position"
+
+            params[0]['children'].insert(
+                1,
+                {
+                    'use': 'optional',
+                    'type': 'int',
+                    'name': 'Alias',
+                    'value': alias,
+                    'doc': [{"documentation": "EtherCAT alias address"}]
+                })
+
+            params[0]['children'].insert(
+                2,
+                {
+                    'use': 'optional',
+                    'type': ['Position', 'Alias'],
+                    'name': 'AddressMode',
+                    'value': address_mode,
+                    'doc': [{"documentation": "EtherCAT addressing mode: Position or Alias"}]
+                })
+
             return params
+    
+    def UpdateIECChannelLocation(self, old_channel, new_channel):
+        if old_channel == new_channel:
+            return
+
+        parent_location = self.CTNParent.GetCurrentLocation()
+
+        old_leading = ".".join(
+            map(str, parent_location + (old_channel,)))
+        new_leading = ".".join(
+            map(str, parent_location + (new_channel,)))
+
+        self.GetCTRoot().UpdateProjectVariableLocation(
+            old_leading, new_leading)
+
 
     def SetParamsAttribute(self, path, value):
-        self.GetSlaveInfos()
-        position = self.BaseParams.getIEC_Channel()
+            self.GetSlaveInfos()
+            position = self.BaseParams.getIEC_Channel()
 
-        # "Type" is shown among the confnode parameters but stored in the
-        # master network configuration, so it is handled here rather than by
-        # ConfigTreeNode. The parameters editor prefixes it with the XSD root
-        # element name, the master calls it by its bare name.
-        root = self.CTNParams[0] if self.CTNParams else "SlaveParams"
+            # "Type" is shown among the confnode parameters but stored in the
+            # master network configuration, so it is handled here rather than by
+            # ConfigTreeNode. The parameters editor prefixes it with the XSD root
+            # element name, the master calls it by its bare name.
+            root = self.CTNParams[0] if self.CTNParams else "SlaveParams"
 
-        if path in ("SlaveParams.Type", "%s.Type" % root):
-            self.CTNParent.SetSlaveType(position, value)
-            slave_type = self.CTNParent.GetSlaveType(self.GetSlavePos())
-            return slave_type["device_type"], True
+            if path in ("SlaveParams.AddressMode", "%s.AddressMode" % root):
+                if value == "":
+                    return value, True
 
-        value, refresh = ConfigTreeNode.SetParamsAttribute(self, path, value)
+                if value not in ("Position", "Alias"):
+                    return value, True
 
-        # IEC_Channel is the ring position of the slave, keep the network
-        # configuration in sync when it changes
-        if path == "BaseParams.IEC_Channel" and value != position:
-            self.CTNParent.SetSlavePosition(position, value)
+                slave = self.CTNParent.GetSlaveByIECChannel(position)
 
-        return value, refresh
+                if slave is not None:
+                    slave_info = slave.getInfo()
+                    current_mode = slave_info.getAddressMode() or "Position"
+
+                    if value == current_mode:
+                        return value, True
+
+                    if value == "Alias":
+                        alias = slave_info.getAlias()
+
+                        if alias is None:
+                            alias = position
+
+                        other_slave = self.CTNParent.GetSlaveByAlias(alias)
+
+                        if other_slave is not None and other_slave is not slave:
+                            other_info = other_slave.getInfo()
+                            other_position = other_info.getPhysAddr()
+
+                            wx.MessageBox(
+                                _("Alias %s is already assigned to the slave at "
+                                  "physical position %s.") % (alias, other_position),
+                                _("Duplicate EtherCAT Alias"),
+                                wx.OK | wx.ICON_ERROR)
+
+                            return current_mode, True
+
+                        logical_channel = alias
+
+                    else:
+                        logical_channel = slave_info.getPhysAddr()
+
+                    slave_info.setAddressMode(value)
+                    self.UpdateIECChannelLocation(
+                        position, logical_channel)
+                    slave_info.setIEC_Channel(logical_channel)
+                    self.BaseParams.setIEC_Channel(logical_channel)
+
+                    self.CTNParent.BufferModel()
+
+                    return value, True
+
+            if path in ("SlaveParams.Type", "%s.Type" % root):
+                slave = self.CTNParent.GetSlaveByIECChannel(position)
+
+                if slave is not None:
+                    phys_addr = slave.getInfo().getPhysAddr()
+                    self.CTNParent.SetSlaveType(phys_addr, value)
+                    slave_type = self.CTNParent.GetSlaveType(phys_addr)
+                    return slave_type["device_type"], True
+
+            if path in ("SlaveParams.Alias", "%s.Alias" % root):
+                # The text editor sends an empty string while the user is
+                # replacing the current value.
+                if value == "":
+                    return value, True
+
+                try:
+                    alias = int(value)
+                except (TypeError, ValueError):
+                    return value, True
+
+                slave = self.CTNParent.GetSlaveByIECChannel(position)
+
+                if slave is not None:
+                    slave_info = slave.getInfo()
+                    current_alias = slave_info.getAlias()
+
+                    # No change.
+                    if alias == current_alias:
+                        return alias, True
+
+                    # Alias must be unique within the project configuration.
+                    other_slave = self.CTNParent.GetSlaveByAlias(alias)
+
+                    if other_slave is not None and other_slave is not slave:
+                        other_info = other_slave.getInfo()
+                        other_position = other_info.getPhysAddr()
+
+                        wx.MessageBox(
+                            _("Alias %s is already assigned to the slave at "
+                              "physical position %s.") % (alias, other_position),
+                            _("Duplicate EtherCAT Alias"),
+                            wx.OK | wx.ICON_ERROR)
+
+                        return current_alias, True
+
+                    slave_info.setAlias(alias)
+
+                    # In Alias mode, IEC_Channel follows the Alias.
+                    if (slave_info.getAddressMode() or "Position") == "Alias":
+                        self.UpdateIECChannelLocation(
+                            position, alias)
+                        slave_info.setIEC_Channel(alias)
+                        self.BaseParams.setIEC_Channel(alias)
+
+                    self.CTNParent.BufferModel()
+
+                    return alias, True
+            
+            value, refresh = ConfigTreeNode.SetParamsAttribute(self, path, value)
+
+            # IEC_Channel represents the configured EtherCAT address selected
+            # by AddressMode.
+            if path == "BaseParams.IEC_Channel" and value != position:
+                slave = self.CTNParent.GetSlaveByIECChannel(position)
+
+                if slave is not None:
+                    slave_info = slave.getInfo()
+                    address_mode = slave_info.getAddressMode() or "Position"
+
+                    if address_mode == "Alias":
+                        slave_info.setAlias(value)
+                    else:
+                        slave_info.setPhysAddr(value)
+
+                    slave_info.setIEC_Channel(value)
+
+                    self.CTNParent.BufferModel()
+                    self.CTNRequestSave()
+
+            return value, refresh
 
     def GetSlaveInfos(self):
         return self.CTNParent.GetSlaveInfos(self.GetSlavePos())

@@ -315,7 +315,7 @@ class _EthercatCFileGenerator(object):
             for entry_infos in slave_entries.values():
                 entry_infos["mapped"] = False
 
-        # Sort slaves by position (IEC_Channel)
+        # Sort slaves by physical EtherCAT position (PhysAddr)
         self.Slaves.sort()
 
         # add jblee
@@ -336,7 +336,7 @@ class _EthercatCFileGenerator(object):
         # Generating code for each slave
         for (slave_idx, slave) in self.Slaves:
             type_infos = slave.getType()
-
+            
             # Extract slave device informations
             device, module_extra_params = self.Controler.GetModuleInfos(type_infos)
             if device is None:
@@ -350,7 +350,7 @@ class _EthercatCFileGenerator(object):
 
             # Confnode parameters of that slave : PDO selection, PDO
             # capabilities override and DC configuration
-            node = self.Controler.GetChildByIECLocation((slave_idx,))
+            node = self.Controler.GetChildBySlavePos(slave_idx)
             ethercat_params = node.GetSlaveParams() if node is not None else None
 
             # Extract slave device object dictionary entries
@@ -359,10 +359,29 @@ class _EthercatCFileGenerator(object):
             # Adding code for declaring slave in master code template strings
             for element in ["vendor", "product_code", "revision_number"]:
                 type_infos[element] = ExtractHexDecValue(type_infos[element])
-            # slaves are addressed by their ring position, alias 0 tells
-            # the master that the position is an absolute one
-            type_infos.update({"slave": slave_idx, "alias": 0,
-                               "position": slave_idx})
+
+            # EtherCAT addressing:
+            # PhysAddr always stores the physical ring position.
+            # IEC_Channel represents either PhysAddr or Alias according
+            # to AddressMode.
+            slave_info = slave.getInfo()
+
+            phys_addr = slave_info.getPhysAddr()
+            alias = slave_info.getAlias()
+            address_mode = slave_info.getAddressMode() or "Position"
+
+            if address_mode == "Alias":
+                if alias is None:
+                    alias = 0
+            else:
+                # In Position mode, IgH must receive alias = 0.
+                alias = 0
+
+            type_infos.update({
+                "slave": slave_idx,
+                "alias": alias,
+                "position": phys_addr
+            })
 
             # Extract slave device CoE informations
             device_coe = device.getCoE()

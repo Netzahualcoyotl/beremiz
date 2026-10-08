@@ -17,3 +17,15 @@ C_runtime/**/*.d
 C_runtime/**/*.o
 beremiz_runtime
 **/tmp/**
+.venv/
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# Compiled/generated objects
+*.o
+*.so
+
+# Backup files
+*.bak

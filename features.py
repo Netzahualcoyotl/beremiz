@@ -14,7 +14,8 @@ libraries = [
     ('Etherlab', 'etherlab.EthercatMaster.EtherlabLibrary', False),
     ('SVGHMI', 'svghmi.SVGHMILibrary', 'svghmi'),
     ('MQTT', 'mqtt.MQTTLibrary', False),
-    ('CanFestival_Lib', 'canfestival.canfestival.CanFestival_Lib','canfestival')]
+    ('CanFestival_Lib', 'canfestival.canfestival.CanFestival_Lib','canfestival'),
+    ('Motion', 'MotionLibrary.MotionLibrary', False)]
 
 catalog = [
     ('mqtt', _('MQTT client'), _('Map MQTT topics as located variables'), 'mqtt.MQTTClient'),
@@ -26,7 +27,8 @@ catalog = [
     ('c_ext', _('C extension'), _('Add C code accessing located variables synchronously'), 'c_ext.CFile'),
     ('py_ext', _('Python file'), _('Add Python code executed asynchronously'), 'py_ext.PythonFile'),
     ('wxglade_hmi', _('WxGlade GUI'), _('Add a simple WxGlade based GUI.'), 'wxglade_hmi.WxGladeHMI'),
-    ('svghmi', _('SVGHMI'), _('SVG based HMI'), 'svghmi.SVGHMI')]
+    ('svghmi', _('SVGHMI'), _('SVG based HMI'), 'svghmi.SVGHMI'),
+    ('motion', _('Motion library'), _('Add Motion runtime ejes y estados'), 'MotionLibrary.MotionClient')]
 
 file_editors = []
 

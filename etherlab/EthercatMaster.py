@@ -26,6 +26,7 @@ from dialogs.BrowseValuesLibraryDialog import BrowseValuesLibraryDialog
 from IDEFrame import TITLE, FILEMENU, PROJECTTREE
 from POULibrary import POULibrary
 
+from dialogs.EtherCATConflictDialog import EtherCATConflictDialog
 from etherlab.ConfigEditor import MasterEditor
 from etherlab.EthercatCFileGenerator import _EthercatCFileGenerator
 from etherlab.EthercatSlave import \
@@ -237,6 +238,7 @@ class _EthercatCTN(object):
     EditorType = MasterEditor
 
     def __init__(self):
+        self._scan_in_progress = False
         config_filepath = self.ConfigFileName()
         config_is_saved = False
         self.Config = None
@@ -370,9 +372,49 @@ class _EthercatCTN(object):
         if slave_profile is not None and slave_profile not in device.GetProfileNumbers():
             return False
         return True
+    
+    def ValidateSlaveConfiguration(self):
+        """
+        Validate that the EtherCAT configuration does not contain
+        duplicate logical channels, physical positions or aliases.
+        """
+        slaves = self.Config.getConfig().getSlave()
+
+        conflicts = {
+            "IEC_Channel": {},
+            "PhysAddr": {},
+            "Alias": {}
+        }
+
+        for slave in slaves:
+            info = slave.getInfo()
+            name = info.getName()
+            iec_channel = info.getIEC_Channel()
+            phys_addr = info.getPhysAddr()
+            alias = info.getAlias()
+
+            conflicts["IEC_Channel"].setdefault(
+                iec_channel, []).append(name)
+
+            conflicts["PhysAddr"].setdefault(
+                phys_addr, []).append(name)
+
+            if alias is not None:
+                conflicts["Alias"].setdefault(
+                    alias, []).append(name)
+
+        duplicates = []
+
+        for field, values in conflicts.items():
+            for value, names in values.items():
+                if len(names) > 1:
+                    duplicates.append(
+                        (field, value, names))
+
+        return duplicates
 
     def GetSlaveName(self, slave_pos):
-        CTNChild = self.GetChildByIECLocation((slave_pos,))
+        CTNChild = self.GetChildBySlavePos(slave_pos)
         if CTNChild is not None:
             return CTNChild.CTNName()
         return self.CTNName()
@@ -390,6 +432,45 @@ class _EthercatCTN(object):
             slave_info = slave.getInfo()
             if slave_info.getPhysAddr() == slave_pos:
                 return slave
+        return None
+    
+    def GetSlaveByIECChannel(self, iec_channel):
+        for slave in self.Config.getConfig().getSlave():
+            slave_info = slave.getInfo()
+            if slave_info.getIEC_Channel() == iec_channel:
+                return slave
+        return None
+    
+    def GetSlaveByPhysAddr(self, phys_addr):
+        for slave in self.Config.getConfig().getSlave():
+            slave_info = slave.getInfo()
+            if slave_info.getPhysAddr() == phys_addr:
+                return slave
+        return None
+    
+    def GetSlaveByAlias(self, alias):
+        for slave in self.Config.getConfig().getSlave():
+            slave_info = slave.getInfo()
+            if slave_info.getAlias() == alias:
+                return slave
+        return None
+    
+    def GetSlaveByConfiguredAlias(self, alias):
+        for slave in self.Config.getConfig().getSlave():
+            slave_info = slave.getInfo()
+
+            if slave_info.getAddressMode() != "Alias":
+                continue
+
+            if slave_info.getAlias() == alias:
+                return slave
+
+        return None
+    
+    def GetChildBySlavePos(self, slave_pos):
+        for child in self.IECSortedChildren():
+            if child.GetSlavePos() == slave_pos:
+                return child
         return None
 
     def GetStartupCommands(self, vendor=None, slave_pos=None, slave_profile=None):
@@ -502,6 +583,12 @@ class _EthercatCTN(object):
             except (KeyError, ValueError):
                 return False
         return True
+    
+    def GetSlaveByType(self, type_infos):
+        for slave in self.Config.getConfig().getSlave():
+            if self.SameSlaveType(slave.getType(), type_infos):
+                return slave
+        return None
 
     def _ScanNetwork(self):
         """
@@ -523,14 +610,52 @@ class _EthercatCTN(object):
         if not scanned:
             logger.write_warning(_("No EtherCAT slave found on the network\n"))
             return
+            
+        self._scan_in_progress = True
 
         added = []
         unchanged = []
         unknown = []
         mismatched = []
+        
+        matched_scanned = set()
 
-        for slave in scanned:
-            position = slave["idx"]
+        for configured_child in self.IECSortedChildren():
+            configured_slave = self.GetSlaveByIECChannel(
+                configured_child.BaseParams.getIEC_Channel())
+
+            if configured_slave is None:
+                continue
+
+            configured_info = configured_slave.getInfo()
+            address_mode = configured_info.getAddressMode() or "Position"
+
+            matched_slave = None
+
+            for index, slave in enumerate(scanned):
+                if index in matched_scanned:
+                    continue
+
+                detected_phys_addr = slave["position"]
+                detected_alias = slave["alias"]
+
+                if address_mode == "Alias":
+                    if configured_info.getAlias() == detected_alias:
+                        matched_slave = (index, slave)
+                        break
+                else:
+                    if configured_info.getPhysAddr() == detected_phys_addr:
+                        matched_slave = (index, slave)
+                        break
+
+            if matched_slave is None:
+                continue
+
+            scan_index, slave = matched_slave
+
+            detected_phys_addr = slave["position"]
+            detected_alias = slave["alias"]
+
             type_infos, device = self.ScannedSlaveType(slave)
 
             if type_infos is None:
@@ -542,22 +667,113 @@ class _EthercatCTN(object):
             else:
                 CTNType = "EthercatSlave"
 
-            child = self.GetChildByIECLocation((position, ))
-            if child is None:
-                self.CTNAddChild("slave%d" % position, CTNType, position)
-                self.SetSlaveType(position, type_infos)
-                added.append((position, type_infos["device_type"]))
-            elif self.SameSlaveType(self.GetSlaveType(position), type_infos):
-                unchanged.append((position, type_infos["device_type"]))
-            else:
-                mismatched.append((position, child, CTNType, type_infos))
+            if address_mode == "Alias":
+                other_slave = self.GetSlaveByPhysAddr(
+                    detected_phys_addr)
 
-        scanned_positions = [slave["idx"] for slave in scanned]
+                if other_slave is not None and other_slave is not configured_slave:
+                    other_info = other_slave.getInfo()
+                    other_position = other_info.getPhysAddr()
+
+                    wx.MessageBox(
+                        _("Physical position %s is already assigned "
+                          "to another configured slave at physical "
+                          "position %s.") %
+                        (detected_phys_addr, other_position),
+                        _("Physical Position Conflict"),
+                        wx.OK | wx.ICON_ERROR)
+
+                    continue
+
+                configured_info.setPhysAddr(detected_phys_addr)
+                configured_info.setAlias(detected_alias)
+
+            else:
+                pass
+
+            if self.SameSlaveType(
+                    configured_slave.getType(), type_infos):
+                unchanged.append(
+                    (detected_phys_addr, type_infos["device_type"]))
+                matched_scanned.add(scan_index)
+            else:
+                existing_slave = self.GetSlaveByType(type_infos)
+
+                if existing_slave is not None and existing_slave is not configured_slave:
+                    conflict_dialog = EtherCATConflictDialog(
+                        app_frame,
+                        detected_phys_addr,
+                        configured_slave,
+                        existing_slave)
+
+                    result = conflict_dialog.ShowModal()
+
+                    if result == wx.ID_OK:
+                        changes = [
+                            (
+                                configured_info.getIEC_Channel(),
+                                conflict_dialog.configured_phys.GetValue(),
+                                conflict_dialog.configured_alias.GetValue()
+                            ),
+                            (
+                                existing_slave.getInfo().getIEC_Channel(),
+                                conflict_dialog.found_phys.GetValue(),
+                                conflict_dialog.found_alias.GetValue()
+                            )
+                        ]
+
+                        error = self.ApplySlaveAddressChanges(changes)
+
+                        if error is not None:
+                            wx.MessageBox(
+                                error,
+                                _("Invalid EtherCAT Configuration"),
+                                wx.OK | wx.ICON_ERROR)
+                        else:
+                            logger.write(
+                                _("Scan: resolved physical position "
+                                  "conflict at position %s\n") %
+                                detected_phys_addr)
+                            matched_scanned.add(scan_index)
+
+                    conflict_dialog.Destroy()
+
+                else:
+                    mismatched.append(
+                        (detected_phys_addr, configured_child,
+                         CTNType, type_infos))
+
+        for index, slave in enumerate(scanned):
+            if index in matched_scanned:
+                continue
+
+            detected_phys_addr = slave["position"]
+            type_infos, device = self.ScannedSlaveType(slave)
+
+            if type_infos is None:
+                unknown.append(slave)
+                continue
+
+            if HAS_MCL and str(_EthercatCIA402SlaveCTN.NODE_PROFILE) in device.GetProfileNumbers():
+                CTNType = "EthercatCIA402Slave"
+            else:
+                CTNType = "EthercatSlave"
+
+            self.CTNAddChild(
+                "slave%d" % detected_phys_addr,
+                CTNType,
+                detected_phys_addr)
+
+            self.SetSlaveType(detected_phys_addr, type_infos)
+            added.append((detected_phys_addr, type_infos["device_type"]))
+
+        scanned_positions = [slave["position"] for slave in scanned]
+        
         missing = [(child.GetSlavePos(), child.CTNName())
                    for child in self.IECSortedChildren()
                    if child.GetSlavePos() not in scanned_positions]
 
-        for position, slave in [(slave["idx"], slave) for slave in unknown]:
+        for position, slave in [(slave["position"], slave) for slave in unknown]:
             logger.write_warning(
                 _("Scan: no ESI file for the device at position {a1} "
                   "(vendor {a2}, product code {a3}, revision {a4}), left alone\n").
@@ -577,8 +793,9 @@ class _EthercatCTN(object):
         if mismatched:
             self.ReplaceMismatchedSlaves(app_frame, mismatched)
 
+        self._scan_in_progress = False
+
         if added or mismatched:
-            self.CTNRequestSave()
             if app_frame:
                 app_frame.RefreshProjectTree()
 
@@ -610,16 +827,47 @@ class _EthercatCTN(object):
 
         for position, child, CTNType, type_infos in mismatched:
             if child.CTNType != CTNType:
-                # plain slave and CiA402 slave are different confnode classes,
-                # the node has to be created again
+                # Plain slave and CiA402 slave are different confnode
+                # classes, so the node has to be created again.
+                #
+                # Preserve the logical EtherCAT addressing configuration.
+                logical_channel = child.BaseParams.getIEC_Channel()
+
+                old_slave = self.GetSlaveByIECChannel(logical_channel)
+
+                address_mode = "Position"
+                phys_addr = position
+                alias = 0
+
+                if old_slave is not None:
+                    old_info = old_slave.getInfo()
+                    address_mode = old_info.getAddressMode() or "Position"
+
+                    if old_info.getPhysAddr() is not None:
+                        phys_addr = old_info.getPhysAddr()
+
+                    if old_info.getAlias() is not None:
+                        alias = old_info.getAlias()
+
                 name = child.CTNName()
                 self._doRemoveChild(child)
-                self.CTNAddChild(name, CTNType, position)
+                self.CTNAddChild(name, CTNType, logical_channel)
+
+                new_slave = self.GetSlaveByIECChannel(logical_channel)
+
+                if new_slave is not None:
+                    new_info = new_slave.getInfo()
+                    new_info.setAddressMode(address_mode)
+                    new_info.setPhysAddr(phys_addr)
+                    new_info.setAlias(alias)
+                    new_info.setIEC_Channel(logical_channel)
+
             else:
                 params = child.GetSlaveParams()
                 if params is not None:
                     params.setRxPDO("")
                     params.setTxPDO("")
+
             self.SetSlaveType(position, type_infos)
 
     def CTNAddChild(self, CTNName, CTNType, IEC_Channel=0):
@@ -628,29 +876,44 @@ class _EthercatCTN(object):
         @param CTNType: string desining the confnode class name (get name from CTNChildrenTypes)
         @param CTNName: string for the name of the confnode instance
         """
-        newConfNodeOpj = ConfigTreeNode.CTNAddChild(self, CTNName, CTNType, IEC_Channel)
+        newConfNodeOpj = ConfigTreeNode.CTNAddChild(
+            self, CTNName, CTNType, IEC_Channel)
 
-        slave = self.GetSlave(newConfNodeOpj.BaseParams.getIEC_Channel())
+        logical_channel = newConfNodeOpj.BaseParams.getIEC_Channel()
+        slave = self.GetSlaveByIECChannel(logical_channel)
+
         if slave is None:
             slave = EtherCATConfigParser.CreateElement("Slave", "Config")
             self.Config.getConfig().appendSlave(slave)
+
             slave_infos = slave.getInfo()
             slave_infos.setName("undefined")
-            slave_infos.setPhysAddr(newConfNodeOpj.BaseParams.getIEC_Channel())
+            slave_infos.setIEC_Channel(logical_channel)
+            slave_infos.setAddressMode("Position")
+            slave_infos.setPhysAddr(logical_channel)
+            slave_infos.setAlias(logical_channel)
+
             self.BufferModel()
-            self.OnCTNSave()
+            if not self._scan_in_progress:
+                self.OnCTNSave()
 
         return newConfNodeOpj
 
     def _doRemoveChild(self, CTNInstance):
-        slave_pos = CTNInstance.GetSlavePos()
-        config = self.Config.getConfig()
-        for idx, slave in enumerate(config.getSlave()):
-            slave_infos = slave.getInfo()
-            if slave_infos.getPhysAddr() == slave_pos:
-                config.removeSlave(idx)
-                self.BufferModel()
-                self.OnCTNSave()
+        logical_channel = CTNInstance.BaseParams.getIEC_Channel()
+        slave = self.GetSlaveByIECChannel(logical_channel)
+
+        if slave is not None:
+            config = self.Config.getConfig()
+
+            for idx, config_slave in enumerate(config.getSlave()):
+                if config_slave is slave:
+                    config.removeSlave(idx)
+                    self.BufferModel()
+                    if not self._scan_in_progress:
+                        self.OnCTNSave()
+                    break
+
         ConfigTreeNode._doRemoveChild(self, CTNInstance)
 
     def SetSlavePosition(self, slave_pos, new_pos):
@@ -684,7 +947,108 @@ class _EthercatCTN(object):
                     except RuntimeError:
                         # widget unexpectedly destroyed, nothing to refresh
                         pass
+    
+    def ApplySlaveAddressChanges(self, changes):
+        """
+        Apply physical-address and alias changes atomically.
 
+        @param changes: [(iec_channel, new_phys_addr, new_alias), ...]
+        @return: None on success, error message on validation failure
+        """
+        slaves = self.Config.getConfig().getSlave()
+
+        requested = {}
+        for iec_channel, new_phys_addr, new_alias in changes:
+            if iec_channel in requested:
+                return _("IEC_Channel %s is specified more than once.") % iec_channel
+
+            requested[iec_channel] = (new_phys_addr, new_alias)
+
+        for iec_channel in requested:
+            slave = self.GetSlaveByIECChannel(iec_channel)
+            if slave is None:
+                return _("No configured slave exists for IEC_Channel %s.") % iec_channel
+
+        final_phys = {}
+        final_alias = {}
+
+        for slave in slaves:
+            info = slave.getInfo()
+            iec_channel = info.getIEC_Channel()
+
+            if iec_channel in requested:
+                phys_addr, alias = requested[iec_channel]
+            else:
+                phys_addr = info.getPhysAddr()
+                alias = info.getAlias()
+
+            if phys_addr is None:
+                return _("IEC_Channel %s has no physical address.") % iec_channel
+
+            if alias is None:
+                return _("IEC_Channel %s has no alias.") % iec_channel
+
+            if phys_addr in final_phys:
+                return _(
+                    "Physical position %s would be assigned to both "
+                    "IEC_Channel %s and IEC_Channel %s.") % (
+                        phys_addr,
+                        final_phys[phys_addr],
+                        iec_channel)
+
+            if alias in final_alias:
+                return _(
+                    "Alias %s would be assigned to both "
+                    "IEC_Channel %s and IEC_Channel %s.") % (
+                        alias,
+                        final_alias[alias],
+                        iec_channel)
+
+            final_phys[phys_addr] = iec_channel
+            final_alias[alias] = iec_channel
+
+        old_to_new = {}
+
+        for slave in slaves:
+            info = slave.getInfo()
+            iec_channel = info.getIEC_Channel()
+
+            old_phys_addr = info.getPhysAddr()
+
+            if iec_channel in requested:
+                new_phys_addr = requested[iec_channel][0]
+            else:
+                new_phys_addr = old_phys_addr
+
+            if old_phys_addr != new_phys_addr:
+                old_to_new[old_phys_addr] = new_phys_addr
+
+        for slave in slaves:
+            info = slave.getInfo()
+            iec_channel = info.getIEC_Channel()
+
+            if iec_channel in requested:
+                new_phys_addr, new_alias = requested[iec_channel]
+                info.setPhysAddr(new_phys_addr)
+                info.setAlias(new_alias)
+
+        for variable in self.ProcessVariables.getvariable():
+            read_from = variable.getReadFrom()
+            if read_from is not None:
+                old_position = read_from.getPosition()
+                if old_position in old_to_new:
+                    read_from.setPosition(old_to_new[old_position])
+
+            write_to = variable.getWriteTo()
+            if write_to is not None:
+                old_position = write_to.getPosition()
+                if old_position in old_to_new:
+                    write_to.setPosition(old_to_new[old_position])
+
+        self.BufferModel()
+
+                
+    
     def GetSlaveType(self, slave_pos):
         slave = self.GetSlave(slave_pos)
         if slave is not None:

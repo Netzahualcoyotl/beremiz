@@ -267,6 +267,9 @@ class CIA402NodeCTNMixin(object):
         node only refers to it.
         """
         raise NotImplementedError
+        
+    def CIA402FieldbusLocation(self):
+        return self.GetCurrentLocation()
 
     def CIA402AxisNetwork(self):
         """
@@ -348,7 +351,7 @@ class CIA402NodeCTNMixin(object):
         @return (variables, completion) where variables is the list of
         var_infos dictionaries, and completion holds the C fragment lists
         """
-        location_str = "_".join(map(str, self.GetCurrentLocation()))
+        location_str = "_".join(map(str, self.CIA402FieldbusLocation()))
 
         (variables,
          default_variables_retrieve,
@@ -476,7 +479,7 @@ class CIA402NodeCTNMixin(object):
         variables, str_completion = collected
 
         current_location = self.GetCurrentLocation()
-        location_str = "_".join(map(str, current_location))
+        location_str = "_".join(map(str, self.CIA402FieldbusLocation()))
         locations = self.CIA402Locations()
 
         # Open CIA402 node code template file

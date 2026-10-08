@@ -163,6 +163,9 @@ class _EthercatCIA402SlaveCTN(CIA402NodeCTNMixin, _EthercatSlaveCTN):
 
     def CIA402AxisRefSuffix(self):
         return ".402"
+    
+    def CIA402FieldbusLocation(self):
+        return self.GetCurrentLocation()
 
     def CIA402AxisNetwork(self):
         location = "_".join(map(str, self.GetCurrentLocation()))
@@ -172,9 +175,41 @@ class _EthercatCIA402SlaveCTN(CIA402NodeCTNMixin, _EthercatSlaveCTN):
                 "        AxsPub.axis->Network = &__axis_network_%s;" % location)
 
     def CIA402ResolveEntry(self, index, subindex, var_type, direction):
-        device_entries = self.CommonMethod.GetAllEntriesList()
-        valid_indices = {idx for (idx, _subidx) in device_entries.keys()}
-        return (index, subindex) if index in valid_indices else None
+        self.LoadPDOSelectData()
+
+        if not self.SelectedRxPDOIndex and not self.SelectedTxPDOIndex:
+            selected_rx = self.LoadDefaultPDOSet()
+            selected_tx = []
+        else:
+            selected_rx = self.SelectedRxPDOIndex
+            selected_tx = self.SelectedTxPDOIndex
+
+        self.CommonMethod.RequestPDOInfo()
+
+        if direction == "Q":
+            pdo_categories = self.CommonMethod.GetRxPDOCategory()
+            pdo_entries = self.CommonMethod.GetRxPDOInfo()
+            selected_pdos = selected_rx
+        else:
+            pdo_categories = self.CommonMethod.GetTxPDOCategory()
+            pdo_entries = self.CommonMethod.GetTxPDOInfo()
+            selected_pdos = selected_tx
+
+        list_index = 0
+        for pdo in pdo_categories:
+            count = pdo["number_of_entry"]
+
+            if pdo["pdo_index"] in selected_pdos:
+                used = pdo_entries[list_index:list_index + count]
+
+                for entry in used:
+                    if (entry["entry_index"] == index and
+                            entry["subindex"] == subindex):
+                        return (index, subindex)
+
+            list_index += count
+
+        return None
 
     def CIA402DeclareEntryPointer(self, var_infos):
         self.CTNParent.FileGenerator.DeclareVariable(
