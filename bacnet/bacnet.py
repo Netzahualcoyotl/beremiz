@@ -412,7 +412,7 @@ class RootClass(object):
         # derives/inherits from wx.grid.GridTableBase). Another reason not to store the whole
         # object is because it is not pickable (i.e. pickle.dump() cannot handle it)!!
         try:
-            fd = open(filepath,   "w")
+            fd = open(filepath,   "wb")
             pickle.dump(self.ObjTablesData, fd)
             fd.close()
             # On successfull save, reset flags to indicate no more changes that
@@ -433,7 +433,7 @@ class RootClass(object):
     def LoadFromFile(self, filepath):
         # Load the data that is saved in SaveToFile()
         try:
-            fd = open(filepath,   "r")
+            fd = open(filepath,   "rb")
             self.ObjTablesData = pickle.load(fd)
             fd.close()
             return True
@@ -446,7 +446,7 @@ class RootClass(object):
                                os.path.expanduser("~"),
                                "%s_EDE.csv" % self.CTNName(),
                                _("EDE files (*_EDE.csv)|*_EDE.csv|All files|*.*"),
-                               wx.SAVE | wx.OVERWRITE_PROMPT)
+                               wx.FD_SAVE | wx.FD_OVERWRITE_PROMPT)
         if dialog.ShowModal() == wx.ID_OK:
             result = self.GenerateEDEFile(dialog.GetPath())
             result = False

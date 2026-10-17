@@ -578,11 +578,14 @@ class ObjectTable(CustomTable):
                 GridCellEditorConstructorArgs = \
                     PropertyConfig["GridCellEditorConstructorArgs"] \
                     if "GridCellEditorConstructorArgs" in PropertyConfig else []
-                grid.SetCellEditor(row, col, PropertyConfig["GridCellEditor"](*GridCellEditorConstructorArgs))
-                grid.SetCellRenderer(row, col, PropertyConfig["GridCellRenderer"]())
+
+                editor = PropertyConfig["GridCellEditor"](*GridCellEditorConstructorArgs)
+
                 if "GridCellEditorParam" in PropertyConfig:
-                    grid.GetCellEditor(row, col).SetParameters(
-                        PropertyConfig["GridCellEditorParam"])
+                    editor.SetParameters(PropertyConfig["GridCellEditorParam"])
+
+                grid.SetCellEditor(row, col, editor)
+                grid.SetCellRenderer(row, col, PropertyConfig["GridCellRenderer"]())
             self.ResizeRow(grid, row)
 
     def FindValueByName(self, PropertyName, PropertyValue):
@@ -864,10 +867,11 @@ class ObjectEditor(wx.Panel):
             attr.SetAlignment(ColumnAlignments[col], wx.ALIGN_CENTRE)
             self.VariablesGrid.SetColAttr(col, attr)
             self.VariablesGrid.SetColMinimalWidth(col, ColumnSizes[col])
-            self.VariablesGrid.AutoSizeColumn(col, False)
+#            self.VariablesGrid.AutoSizeColumn(col, False)
 
         # layout the items in all sizers, and show them too.
         self.SetSizer(self.MainSizer)    # Have the wondow 'own' the sizer...
+        wx.CallAfter(self._AutoSizeColumns)
         # self.MainSizer.ShowItems(True)  # not needed once the window 'owns' the sizer (SetSizer())
         # self.MainSizer.Layout()         # not needed once the window 'owns' the sizer (SetSizer())
 
@@ -884,6 +888,10 @@ class ObjectEditor(wx.Panel):
         # NOTE: ObjectTable.ResetView() (remember, ObjTable is of class ObjectTable)
         #         calls ObjectTable._updateColAttrs(), who will do the configuring.
         self.ObjTable.ResetView(self.VariablesGrid)
+
+    def _AutoSizeColumns(self):
+        for col in range(self.ObjTable.GetNumberCols()):
+            self.VariablesGrid.AutoSizeColumn(col, False)
 
     def RefreshView(self):
         # print "ObjectEditor.RefreshView() called!!!"
