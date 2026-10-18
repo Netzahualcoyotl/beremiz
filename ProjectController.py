@@ -2328,12 +2328,11 @@ class ProjectController(ConfigTreeNode, PLCControler):
         Stop PLC
         """
         success = True
+        self.KillDebugThread()
+
         if self._connector is not None and not self._connector.StopPLC():
             self.logger.write_error(_("Couldn't stop PLC !\n"))
             success = False
-
-        # debugthread should die on his own
-        # self.KillDebugThread()
 
         wx.CallAfter(self.UpdateMethodsFromPLCStatus)
         return success

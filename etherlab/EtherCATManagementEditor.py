@@ -300,6 +300,13 @@ class SlaveStatePanelClass(wx.Panel):
 
     def GetCurrentState(self, event):
 
+        ctr = self.Controler.GetCTRoot()
+
+        if not ctr or getattr(ctr, "_connector", None) is None:
+            if self.SlaveStateThread.IsRunning():
+                self.SlaveStateThread.Stop()
+            return
+
         try:
             raw = self.Controler.CommonMethod.GetSlaveStateFromSlave()
 
