@@ -1,11 +1,11 @@
 Build and install
 =================
 
-Install latest release
-----------------------
+Source code
+-----------
 
-Windows installer and Snap package for Linux are available in `Github releases <https://github.com/beremiz/beremiz/releases>`_
-and `Snapcraft's store <https://snapcraft.io/beremiz>`_
+Source code for Beremiz is available in
+`GitHub <https://github.com/Netzahualcoyotl/beremiz>`_.
 
 Developer setup
 ---------------
@@ -40,8 +40,8 @@ Get source code (Git)
 .. code-block:: bash
 
     cd ~/Beremiz
-    git clone https://github.com/beremiz/beremiz
-    git clone https://github.com/beremiz/matiec
+    git clone https://github.com/Netzahualcoyotl/beremiz
+    git clone https://github.com/Netzahualcoyotl/matiec
 
 Python prerequisites (virtualenv)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -75,7 +75,7 @@ Only needed for Modbus support.
 
     cd ~/Beremiz
 
-    git clone https://github.com/beremiz/Modbus
+    git clone https://github.com/Netzahualcoyotl/Modbus
 
     cd ~/Beremiz/Modbus
     make
@@ -93,7 +93,7 @@ be position-independent (``-DCMAKE_POSITION_INDEPENDENT_CODE=ON``).
 
     cd ~/Beremiz
 
-    git clone https://github.com/beremiz/canfestival
+    git clone https://github.com/Netzahualcoyotl/CanFestival canfestival
 
     cd ~/Beremiz/canfestival
     mkdir build && cd build
@@ -117,12 +117,12 @@ Only needed for BACnet support.
 .. code-block:: bash
 
     cd ~/Beremiz
-    svn checkout https://svn.code.sf.net/p/bacnet/code/trunk/bacnet-stack/ BACnet
+    git clone https://github.com/Netzahualcoyotl/BACnet
     cd BACnet
     make MAKE_DEFINE='-fPIC' \
          MY_BACNET_DEFINES='-DPRINT_ENABLED=1 -DBACAPP_ALL -DBACFILE \
              -DINTRINSIC_REPORTING -DBACNET_TIME_MASTER \
-             -DBACNET_PROPERTY_LISTS=1 -DBACNET_PROTOCOL_REVISION=16' \
+             -DBACNET_PROPERTY_LISTS=1 -DBACNET_PROTOCOL_REVISION=17' \
          library
 
 Launch Beremiz IDE
@@ -130,7 +130,9 @@ Launch Beremiz IDE
 
 .. code-block:: bash
 
-    ~/Beremiz/venv/bin/python ~/Beremiz/beremiz/Beremiz.py
+    cd ~/Beremiz/beremiz
+    source .venv/bin/activate
+    ./Beremiz.py
 
 Run standalone Beremiz runtime
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -139,8 +141,10 @@ Start standalone Beremiz service:
 
 .. code-block:: bash
 
-    mkdir ~/Beremiz/beremiz_runtime_workdir
-    ~/Beremiz/venv/bin/python ~/Beremiz/beremiz/Beremiz_service.py \
+    mkdir -p ~/Beremiz/beremiz_runtime_workdir
+    cd ~/Beremiz/beremiz
+    source .venv/bin/activate
+    python beremiz/Beremiz_service.py \
         -p 61194 -i localhost -x 0 ~/Beremiz/beremiz_runtime_workdir
 
 To connect IDE with runtime, enter target location URI in project's settings
@@ -163,36 +167,75 @@ To build documentation you need following packages on Ubuntu/Debian:
 
 .. code-block:: bash
 
-    sudo apt-get install build-essential python-sphynx
+    sudo apt-get install build-essential python3-sphinx
 
 Documentation in HTML
 ~~~~~~~~~~~~~~~~~~~~~
 
-Build documentation:
+The documentation source files are stored in the ``doc`` directory of the
+Beremiz source tree. They are written in reStructuredText (ReST) and processed
+by Sphinx to generate HTML documentation.
+
+To build the HTML documentation, run:
 
 .. code-block:: bash
 
-    cd ~/Beremiz/doc
-    make all
+    cd ~/Beremiz/beremiz/doc
+    make dirhtml
 
-Result documentation is stored in directories ``doc/_build/dirhtml*``.
+The Makefile uses the ``dirhtml`` builder for the main documentation output.
+The generated HTML files are stored in the ``_build/dirhtml`` directory.
+Each documentation page is stored as an ``index.html`` file inside its
+corresponding directory.
+
+To open the main documentation page in a web browser, run:
+
+.. code-block:: bash
+
+    xdg-open ~/Beremiz/beremiz/doc/_build/dirhtml/index.html
 
 Documentation in PDF
 ~~~~~~~~~~~~~~~~~~~~
 
-To build pdf documentation you have to install additional packages on
-Ubuntu/Debian:
+Sphinx can generate a PDF version of the Beremiz documentation using LaTeX.
+To build the PDF documentation on Ubuntu/Debian, install the following
+system packages:
 
 .. code-block:: bash
 
-    sudo apt-get install textlive-latex-base texlive-latex-recommended \
-         texlive-fonts-recommended texlive-latex-extra
+    sudo apt-get update
+    sudo apt-get install inkscape latexmk texlive-latex-base \
+        texlive-latex-recommended texlive-fonts-recommended \
+        texlive-latex-extra
 
-Build documentation:
+Install the Python dependency required to convert SVG images to PDF:
 
 .. code-block:: bash
 
-    cd ~/Beremiz/doc
+    cd ~/Beremiz/beremiz
+    source .venv/bin/activate
+    python -m pip install sphinxcontrib-svg2pdfconverter
+
+Build the PDF documentation:
+
+.. code-block:: bash
+
+    cd ~/Beremiz/beremiz/doc
     make latexpdf
 
-Result documentation is stored in ``doc/_build/latex/Beremiz.pdf``.
+Sphinx generates the LaTeX source files and uses LaTeX to compile them
+into a PDF document.
+
+The generated PDF is stored in:
+
+``_build/latex/Beremiz.pdf``
+
+The full path is:
+
+``~/Beremiz/beremiz/doc/_build/latex/Beremiz.pdf``
+
+To open the generated PDF, run:
+
+.. code-block:: bash
+
+    xdg-open ~/Beremiz/beremiz/doc/_build/latex/Beremiz.pdf
