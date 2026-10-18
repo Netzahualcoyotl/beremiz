@@ -48,13 +48,14 @@ Python prerequisites (virtualenv)
 
 .. code-block:: bash
 
-    # setup isolated python environment 
-    # Note: --system-site-packages is for using distro's
-    #       wxPython package instead of re-building it in venv.
-    #       requirements.txt is expected to match latest ubuntu LTS
-    python3 -m venv --system-site-packages ~/Beremiz/venv
-    # install required python packages
-    ~/Beremiz/venv/bin/pip install -r ~/Beremiz/beremiz/requirements.txt
+    # Set up the Python virtual environment
+    cd ~/Beremiz/beremiz
+    # Use the system wxPython package instead of rebuilding it in the venv
+    python3 -m venv --system-site-packages .venv
+    # Activate the virtual environment
+    source .venv/bin/activate
+    # Install required Python packages
+    python -m pip install -r requirements.txt
 
 Build MatIEC compiler
 ~~~~~~~~~~~~~~~~~~~~~
@@ -163,11 +164,16 @@ Source code for documentation is stored in ``doc`` directory in project's
 source tree. It's written in reStructuredText (ReST) and uses Sphinx to
 generate documentation in different formats.
 
-To build documentation you need following packages on Ubuntu/Debian:
+To build documentation, install the system packages required for
+compilation and the Python dependencies in the project's virtual
+environment:
 
 .. code-block:: bash
 
-    sudo apt-get install build-essential python3-sphinx
+    sudo apt-get install build-essential
+    cd ~/Beremiz/beremiz
+    source .venv/bin/activate
+    python -m pip install sphinx sphinxcontrib-svg2pdfconverter
 
 Documentation in HTML
 ~~~~~~~~~~~~~~~~~~~~~
@@ -180,7 +186,9 @@ To build the HTML documentation, run:
 
 .. code-block:: bash
 
-    cd ~/Beremiz/beremiz/doc
+    cd ~/Beremiz/beremiz
+    source .venv/bin/activate
+    cd doc
     make dirhtml
 
 The Makefile uses the ``dirhtml`` builder for the main documentation output.
