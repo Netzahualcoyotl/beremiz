@@ -15,7 +15,7 @@ import util.paths as paths
 # - open62541 was just built (not installed)
 
 Open62541Path = paths.ThirdPartyPath("open62541")
-Open62541LibraryPath = os.path.join(Open62541Path,"build","bin") 
+Open62541LibraryPath = os.path.join(Open62541Path,"build-beremiz","bin") 
 Open62541IncludePaths = [os.path.join(Open62541Path, *dirs) for dirs in [
     ("plugins","include"),
     ("build","src_generated"),

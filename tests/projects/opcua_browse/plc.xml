@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <project xmlns:ns1="http://www.plcopen.org/xml/tc6_0201" xmlns:xhtml="http://www.w3.org/1999/xhtml" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns="http://www.plcopen.org/xml/tc6_0201">
   <fileHeader companyName="Unknown" productName="Unnamed" productVersion="1" creationDateTime="2022-07-16T10:46:25"/>
-  <contentHeader name="Unnamed" modificationDateTime="2022-11-10T17:51:34">
+  <contentHeader name="Unnamed" modificationDateTime="2026-10-19T07:58:45">
     <coordinateInfo>
       <fbd>
         <scaling x="5" y="5"/>
@@ -20,15 +20,21 @@
       <pou name="program0" pouType="program">
         <interface>
           <localVars>
-            <variable name="LocalVar0" address="%IL0.2">
+            <variable name="LocalVar0" address="%IL0.0">
               <type>
                 <LREAL/>
               </type>
+              <documentation>
+                <xhtml:p><![CDATA[opcua_0/TestIn]]></xhtml:p>
+              </documentation>
             </variable>
-            <variable name="LocalVar1" address="%QL0.3">
+            <variable name="LocalVar1" address="%QL0.0">
               <type>
                 <LREAL/>
               </type>
+              <documentation>
+                <xhtml:p><![CDATA[opcua_0/TestOut]]></xhtml:p>
+              </documentation>
             </variable>
           </localVars>
           <localVars>
