@@ -17,6 +17,12 @@ def MQTT_publish(clientname, topic, payload, QoS = 1, Retained = False):
         ctypes.c_uint8,   # QoS
         ctypes.c_uint8,   # Retained
     ]
+    if isinstance(topic, str):
+        topic = topic.encode("utf-8")
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+    if not isinstance(topic, bytes) or not isinstance(payload, bytes):
+        raise TypeError("MQTT topic and payload must be str or bytes")
     res = c_function(topic, payload, len(payload), QoS, Retained)
     return res
 
@@ -38,8 +44,14 @@ MQTT_client_cbs = {}
 
 def mqtt_per_client_cb_factory(clientname):
     def per_client_onmsg_cb(topic, dataptr, datalen):
+        if isinstance(topic, bytes):
+            topic = topic.decode("utf-8")
+
         payload = ctypes.string_at(dataptr, datalen)
-        subscriber,_Qos = MQTT_subscribers_cbs[clientname].get(topic, None)
+        subscriber, _Qos = MQTT_subscribers_cbs[clientname].get(
+            topic, (None, None)
+        )
+
         if subscriber:
             subscriber(topic, payload)
             return 0
@@ -57,6 +69,11 @@ def _MQTT_subscribe(clientname, topic, QoS):
     c_function.argtypes = [
         ctypes.c_char_p,  # topic
         ctypes.c_uint8]   # QoS
+
+    if isinstance(topic, str):
+        topic = topic.encode("utf-8")
+    if not isinstance(topic, bytes):
+        raise TypeError("MQTT topic must be str or bytes")
 
     return c_function(topic, QoS)
 
